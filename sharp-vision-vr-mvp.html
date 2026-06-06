@@ -1165,6 +1165,7 @@
           case 'ITI':   if (state.phaseT >= CONFIG.iti) { if (state.trial >= (LEVELS[curLevel - 1].trials || CONFIG.trialsPerLevel)) endLevel(); else newTrial(); } break;
         }
       }
+      if (DEBUG_NO_OVERLAYS) { circle.visible = false; gaborField.visible = false; focusRing.visible = false; corridor.visible = false; }
       renderer.render(scene, camera);
     });
 
