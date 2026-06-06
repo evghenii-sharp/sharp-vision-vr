@@ -50,7 +50,6 @@
       text: '#eef1f5', dim: '#8a9099', faint: '#5b626c',
       good: 0x2f8f5b, bad: 0xb35454,
     };
-    const DEBUG_NO_OVERLAYS = true; // TEMP: hide flash/fade/logo billboards to isolate the "square"
     const GABOR_BG = 0x8a8a8a, GABOR_MEAN = 138; // mid-grey field for the Gabor levels (matches reference)
     const GABOR_Y = -0.2, GABOR_R = 0.5;          // grey display disc: centre Y and radius
 
@@ -82,7 +81,6 @@
       { n: 11, name: 'Accommodation', short: 'Accom', mode: 'accommodation', nearZ: -1.0, farZ: -7.0 },
       { n: 12, name: 'Dichoptic',     short: 'Dich',  mode: 'dichoptic', z: -2.2 },
       { n: 13, name: 'L/R Eye',       short: 'L/R',   mode: 'lreye', radius: 0.06, z: -2.2, trials: 20 },
-      { n: 14, name: 'Test',          short: 'Test',  mode: 'depth', radius: 0.14, zRef: -14.0, whiteBg: true, noFloorCeil: true, noBack: true },
     ];
 
     // ---------------------------------------------------------------------------
@@ -124,7 +122,7 @@
     function updateBackground() {
       const L = LEVELS[curLevel - 1];
       const passthrough = renderer.xr.isPresenting && screen === 'TRAINING' && L.ar;
-      const col = (screen === 'TRAINING' && L.whiteBg) ? 0xffffff : ORYX.bg;
+      const col = ORYX.bg;
       skybox.visible = !passthrough;
       skybox.material.color.set(col);
       scene.background = passthrough ? null : new THREE.Color(col);
@@ -145,13 +143,12 @@
       const g = new THREE.GridHelper(30, 40, 0x26314d, 0x26314d);
       g.rotation.x = rotX; g.rotation.z = rotZ; g.position.set(px, py, pz);
       corridor.add(g);
-      return g;
     }
-    const gridFloor = addGrid(0, 0, 0, -1.3, -12);        // floor
-    const gridCeil  = addGrid(0, 0, 0,  1.3, -12);        // ceiling
-    addGrid(0, Math.PI / 2, -2.4, 0, -12);                // left wall
-    addGrid(0, Math.PI / 2,  2.4, 0, -12);                // right wall
-    const gridBack = addGrid(Math.PI / 2, 0, 0, 0, -20);  // back wall — grid backdrop behind the circle
+    addGrid(0, 0, 0, -1.3, -12);           // floor
+    addGrid(0, 0, 0,  1.3, -12);           // ceiling
+    addGrid(0, Math.PI / 2, -2.4, 0, -12); // left wall
+    addGrid(0, Math.PI / 2,  2.4, 0, -12); // right wall
+    addGrid(Math.PI / 2, 0, 0, 0, -20);    // back wall — grid backdrop behind the circle
 
     // ---------------------------------------------------------------------------
     // Canvas helpers
@@ -592,7 +589,6 @@
       { label: 'Gabor', subs: [{ n: 6, label: 'Coarse' }, { n: 7, label: 'Medium' }, { n: 8, label: 'Fine' }] },
       { label: 'Distance E test', n: 11 },
       { label: 'Left/Right eye', n: 13 },
-      { label: 'Test', n: 14 },
     ];
     // Session = one level per top-bar category; sub-categories use Medium by default
     const catLevel = (cat) => cat.subs ? (cat.subs[1] || cat.subs[0]).n : cat.n;
@@ -808,9 +804,7 @@
         hideSubs();
       }
       const mode = LEVELS[curLevel - 1].mode;
-      corridor.visible = !LEVELS[curLevel - 1].noCorridor && ((mode === 'depth' && !LEVELS[curLevel - 1].ar) || mode === 'accommodation');
-      gridFloor.visible = gridCeil.visible = !LEVELS[curLevel - 1].noFloorCeil; // Test: drop floor/ceiling
-      gridBack.visible = !LEVELS[curLevel - 1].noBack; // Test: drop back wall
+      corridor.visible = (mode === 'depth' && !LEVELS[curLevel - 1].ar) || mode === 'accommodation';
       frame.position.y = mode === 'gabor' ? GABOR_Y : STIM_Y; // crosses inside the grey disc for gabor
       frame.visible = false; // shown per-phase (only with the stimulus) in setPhase
       gaborField.visible = mode === 'gabor'; // grey display disc stays for the whole gabor level
@@ -1130,7 +1124,7 @@
         }
       }
 
-      logoPlane.visible = logoPlaying && !DEBUG_NO_OVERLAYS; // authoritative: never linger after the intro
+      logoPlane.visible = logoPlaying; // authoritative: never linger after the intro
       if (logoPlaying) {
         const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
         cam.getWorldPosition(_cp); cam.getWorldQuaternion(_cq);
@@ -1140,8 +1134,8 @@
       }
 
       // Authoritative every-frame visibility: overlays show ONLY while animating, never in AR.
-      flash.visible = !DEBUG_NO_OVERLAYS && flashT > 0 && !overlaySuppressed();
-      fade.visible = !DEBUG_NO_OVERLAYS && fadePhase !== 'idle' && !overlaySuppressed();
+      flash.visible = flashT > 0 && !overlaySuppressed();
+      fade.visible = fadePhase !== 'idle' && !overlaySuppressed();
 
       if (screen === 'TRAINING' && fadePhase === 'idle') {
         state.phaseT += dt;
@@ -1165,7 +1159,6 @@
           case 'ITI':   if (state.phaseT >= CONFIG.iti) { if (state.trial >= (LEVELS[curLevel - 1].trials || CONFIG.trialsPerLevel)) endLevel(); else newTrial(); } break;
         }
       }
-      if (DEBUG_NO_OVERLAYS) { circle.visible = false; gaborField.visible = false; focusRing.visible = false; corridor.visible = false; }
       renderer.render(scene, camera);
     });
 
