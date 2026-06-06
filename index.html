@@ -78,6 +78,7 @@
       { n: 11, name: 'Accommodation', short: 'Accom', mode: 'accommodation', nearZ: -1.0, farZ: -7.0 },
       { n: 12, name: 'Dichoptic',     short: 'Dich',  mode: 'dichoptic', z: -2.2 },
       { n: 13, name: 'L/R Eye',       short: 'L/R',   mode: 'lreye', radius: 0.06, z: -2.2, trials: 20 },
+      { n: 14, name: 'Test',          short: 'Test',  mode: 'depth', radius: 0.14, zRef: -14.0, whiteBg: true, noCorridor: true },
     ];
 
     // ---------------------------------------------------------------------------
@@ -119,9 +120,10 @@
     function updateBackground() {
       const L = LEVELS[curLevel - 1];
       const passthrough = renderer.xr.isPresenting && screen === 'TRAINING' && L.ar;
+      const col = (screen === 'TRAINING' && L.whiteBg) ? 0xffffff : ORYX.bg;
       skybox.visible = !passthrough;
-      skybox.material.color.set(ORYX.bg);
-      scene.background = passthrough ? null : new THREE.Color(ORYX.bg);
+      skybox.material.color.set(col);
+      scene.background = passthrough ? null : new THREE.Color(col);
     }
 
     const fixGeo = new THREE.BufferGeometry().setFromPoints([
@@ -140,10 +142,11 @@
       g.rotation.x = rotX; g.rotation.z = rotZ; g.position.set(px, py, pz);
       corridor.add(g);
     }
-    addGrid(0, 0, 0, -1.3, -12);        // floor
-    addGrid(0, 0, 0,  1.3, -12);        // ceiling
-    addGrid(Math.PI / 2, 0, 0, 0, -20); // back wall — grid backdrop behind the circle
-    // (side walls removed — they created dark vertical "columns" in view)
+    addGrid(0, 0, 0, -1.3, -12);           // floor
+    addGrid(0, 0, 0,  1.3, -12);           // ceiling
+    addGrid(0, Math.PI / 2, -2.4, 0, -12); // left wall
+    addGrid(0, Math.PI / 2,  2.4, 0, -12); // right wall
+    addGrid(Math.PI / 2, 0, 0, 0, -20);    // back wall — grid backdrop behind the circle
 
     // ---------------------------------------------------------------------------
     // Canvas helpers
@@ -584,6 +587,7 @@
       { label: 'Gabor', subs: [{ n: 6, label: 'Coarse' }, { n: 7, label: 'Medium' }, { n: 8, label: 'Fine' }] },
       { label: 'Distance E test', n: 11 },
       { label: 'Left/Right eye', n: 13 },
+      { label: 'Test', n: 14 },
     ];
     // Session = one level per top-bar category; sub-categories use Medium by default
     const catLevel = (cat) => cat.subs ? (cat.subs[1] || cat.subs[0]).n : cat.n;
@@ -799,7 +803,7 @@
         hideSubs();
       }
       const mode = LEVELS[curLevel - 1].mode;
-      corridor.visible = (mode === 'depth' && !LEVELS[curLevel - 1].ar) || mode === 'accommodation';
+      corridor.visible = !LEVELS[curLevel - 1].noCorridor && ((mode === 'depth' && !LEVELS[curLevel - 1].ar) || mode === 'accommodation');
       frame.position.y = mode === 'gabor' ? GABOR_Y : STIM_Y; // crosses inside the grey disc for gabor
       frame.visible = false; // shown per-phase (only with the stimulus) in setPhase
       gaborField.visible = mode === 'gabor'; // grey display disc stays for the whole gabor level
