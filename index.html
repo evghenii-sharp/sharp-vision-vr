@@ -1,0 +1,1171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>oryx · Sharp Vision VR</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #000; font-family: system-ui, sans-serif; }
+    #enterBtn {
+      position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      z-index: 10; cursor: pointer;
+      padding: 39px 90px; border: none; border-radius: 24px;
+      background: #fff; color: #08090b; font: 600 42px system-ui, sans-serif;
+      letter-spacing: 0.6px;
+    }
+    #enterBtn:hover { background: #e6e9ee; }
+    #dashBtn {
+      position: fixed; top: 12px; left: 12px; z-index: 11; cursor: pointer;
+      padding: 8px 14px; border: 1px solid #2a2f37; border-radius: 10px;
+      background: #14171c; color: #aab0b8; font: 600 12px system-ui, sans-serif;
+    }
+    #dashBtn:hover { border-color: #3d5afe; }
+  </style>
+</head>
+<body>
+  <button id="enterBtn">Oryx</button>
+  <button id="dashBtn">Dashboard (PC)</button>
+  <video id="logoVideo" src="LOGO.mp4" muted playsinline preload="auto" style="display:none"></video>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+
+    const ORYX = {
+      bg: 0x040406,
+      accent: 0x3d5afe, accentHex: '#3d5afe',
+      panel: '#0a0c10', card: '#15181d', border: '#20242c',
+      text: '#eef1f5', dim: '#8a9099', faint: '#5b626c',
+      good: 0x2f8f5b, bad: 0xb35454,
+    };
+    const GABOR_BG = 0x8a8a8a, GABOR_MEAN = 138; // mid-grey field for the Gabor levels (matches reference)
+    const GABOR_Y = -0.2, GABOR_R = 0.5;          // grey display disc: centre Y and radius
+
+    const CONFIG = {
+      pickSharper: true,
+      trialsPerLevel: 10,
+      preStart: 2.0,         // lead-in before the first circle of a level
+      tStim: 0.5, tGap: 1.0, iti: 0.7,
+      baseBlurPx: 14, minBlurPx: 2, maxBlurPx: 26, stepDownPx: 2, stepUpPx: 3,
+      baseDz: 3.0, minDz: 1.0, maxDz: 5.0, dzStepDown: 0.3, dzStepUp: 0.45,
+      // contrast staircase (Gabor) — faint patch, lower contrast = harder
+      baseContrast: 0.25, minContrast: 0.03, maxContrast: 0.6, ctStepDown: 0.03, ctStepUp: 0.05,
+      // optotype size staircase (Tumbling E / crowding) — smaller = harder
+      baseOpto: 0.10, minOpto: 0.025, maxOpto: 0.18, optoStepDown: 0.012, optoStepUp: 0.02,
+    };
+
+    // Renamed levels: 3 blur sizes, then distance VR / AR
+    const LEVELS = [
+      { n: 1, name: 'Blur · Large',  short: 'Blur L',  mode: 'acuity', radius: 0.11,  z: -2.2 },
+      { n: 2, name: 'Blur · Medium', short: 'Blur M',  mode: 'acuity', radius: 0.06,  z: -2.2 },
+      { n: 3, name: 'Blur · Small',  short: 'Blur S',  mode: 'acuity', radius: 0.025, z: -2.2 },
+      { n: 4, name: 'Distance · VR', short: 'Dist VR', mode: 'depth',  radius: 0.14, zRef: -14.0 },
+      { n: 5, name: 'Distance · AR', short: 'Dist AR', mode: 'depth',  radius: 0.14, zRef: -12.0, ar: true },
+      { n: 6, name: 'Gabor · Coarse', short: 'Gab C', mode: 'gabor', cycles: 4, radius: 0.045, z: -2.2 },
+      { n: 7, name: 'Gabor · Medium', short: 'Gab M', mode: 'gabor', cycles: 7, radius: 0.045, z: -2.2 },
+      { n: 8, name: 'Gabor · Fine',   short: 'Gab F', mode: 'gabor', cycles: 11, radius: 0.045, z: -2.2 },
+      { n: 9,  name: 'Optotype · E', short: 'Opto',  mode: 'optotype', z: -2.2 },
+      { n: 10, name: 'Crowding',     short: 'Crowd', mode: 'crowding', z: -2.2 },
+      { n: 11, name: 'Accommodation', short: 'Accom', mode: 'accommodation', nearZ: -1.0, farZ: -7.0 },
+      { n: 12, name: 'Dichoptic',     short: 'Dich',  mode: 'dichoptic', z: -2.2 },
+      { n: 13, name: 'L/R Eye',       short: 'L/R',   mode: 'lreye', radius: 0.06, z: -2.2, trials: 20 },
+    ];
+
+    // ---------------------------------------------------------------------------
+    // Demo data shown on the dashboard (static — populated look)
+    // ---------------------------------------------------------------------------
+    const SESSION_GOAL = 30;
+    const stats = {
+      sessions: 18,
+      prev: { acc: 82, mode: 'acuity', metric: 8 },
+      best: { 1: 92, 2: 80, 3: 68, 4: 74, 5: 61 },
+      weekdays: [true, true, false, true, true, true, false], // Sun … Sat
+    };
+
+    // ---------------------------------------------------------------------------
+    // Scene + rig
+    // ---------------------------------------------------------------------------
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(ORYX.bg);
+    const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.layers.enable(1); camera.layers.enable(2); // desktop sees both dichoptic layers
+    const rig = new THREE.Group();
+    scene.add(rig);
+    const STIM_Y = -0.12; // stimuli sit a bit below centre so big patterns clear the top panel
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.xr.enabled = true;
+    renderer.xr.setFramebufferScaleFactor(1.4); // render XR at higher res → smoother, fewer jaggies
+    renderer.xr.setReferenceSpaceType('local');
+    document.body.appendChild(renderer.domElement);
+    scene.add(new THREE.AmbientLight(0xffffff, 1.0));
+
+    const skybox = new THREE.Mesh(
+      new THREE.SphereGeometry(50, 24, 16),
+      new THREE.MeshBasicMaterial({ color: ORYX.bg, side: THREE.BackSide })
+    );
+    scene.add(skybox);
+    function updateBackground() {
+      const L = LEVELS[curLevel - 1];
+      const passthrough = renderer.xr.isPresenting && screen === 'TRAINING' && L.ar;
+      skybox.visible = !passthrough;
+      skybox.material.color.set(ORYX.bg);
+      scene.background = passthrough ? null : new THREE.Color(ORYX.bg);
+    }
+
+    const fixGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(-0.03, 0, 0), new THREE.Vector3(0.03, 0, 0),
+      new THREE.Vector3(0, -0.03, 0), new THREE.Vector3(0, 0.03, 0),
+    ]);
+    const fixation = new THREE.LineSegments(fixGeo, new THREE.LineBasicMaterial({ color: 0x6470ff }));
+    fixation.position.set(0, 0, -2.2);
+    rig.add(fixation);
+
+    const corridor = new THREE.Group();
+    corridor.visible = false;
+    rig.add(corridor);
+    function addGrid(rotX, rotZ, px, py, pz) {
+      const g = new THREE.GridHelper(30, 40, 0x26314d, 0x26314d);
+      g.rotation.x = rotX; g.rotation.z = rotZ; g.position.set(px, py, pz);
+      corridor.add(g);
+    }
+    addGrid(0, 0, 0, -1.3, -12);           // floor
+    addGrid(0, 0, 0,  1.3, -12);           // ceiling
+    addGrid(0, Math.PI / 2, -2.4, 0, -12); // left wall
+    addGrid(0, Math.PI / 2,  2.4, 0, -12); // right wall
+    addGrid(Math.PI / 2, 0, 0, 0, -20);    // back wall — grid backdrop behind the circle
+
+    // ---------------------------------------------------------------------------
+    // Canvas helpers
+    // ---------------------------------------------------------------------------
+    function rr(ctx, x, y, w, h, r) {
+      r = Math.min(r, h / 2, w / 2);
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+    function newTex(cv) {
+      const t = new THREE.CanvasTexture(cv);
+      t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      t.needsUpdate = true;
+      return t;
+    }
+
+    // Extra canvas margin so a large blur halo isn't clipped into a square.
+    // Disc pixels & blur are unchanged; PLANE_K rescales the plane so the
+    // visible circle size stays the same as before.
+    const TEX = 320, DISC_R = 114, PLANE_K = TEX / 256;
+    function makeCircleTexture(blurPx) {
+      const cv = document.createElement('canvas');
+      cv.width = cv.height = TEX;
+      const ctx = cv.getContext('2d');
+      const c = TEX / 2;
+      ctx.clearRect(0, 0, TEX, TEX);
+      ctx.filter = blurPx > 0 ? `blur(${blurPx}px)` : 'none';
+      const grad = ctx.createRadialGradient(c, c, 4, c, c, DISC_R + 4);
+      grad.addColorStop(0, '#ffffff'); grad.addColorStop(0.6, '#e8e8e8');
+      grad.addColorStop(0.85, '#cfcfcf'); grad.addColorStop(1, '#909090');
+      ctx.fillStyle = grad;
+      ctx.beginPath(); ctx.arc(c, c, DISC_R, 0, Math.PI * 2); ctx.fill();
+      return newTex(cv);
+    }
+    const sharpTex = makeCircleTexture(0);
+
+    // Gabor patch: faint light bars (Gaussian-windowed grating) on the dark scene.
+    // Alpha carries the contrast, so the gaps are fully transparent — no grey blob,
+    // only the stripes are visible. Lower contrast = harder to detect.
+    function makeGaborTexture(contrast, cycles) {
+      const S = 256;
+      const cv = document.createElement('canvas'); cv.width = cv.height = S;
+      const ctx = cv.getContext('2d');
+      const img = ctx.createImageData(S, S);
+      const d = img.data;
+      const c = S / 2, sigma = S * 0.16;
+      for (let y = 0; y < S; y++) {
+        for (let x = 0; x < S; x++) {
+          const dx = x - c, dy = y - c;
+          const env = Math.exp(-(dx * dx + dy * dy) / (2 * sigma * sigma));
+          const lum = GABOR_MEAN + GABOR_MEAN * contrast * env * Math.sin(2 * Math.PI * cycles * (x / S));
+          const i = (y * S + x) * 4;
+          d[i] = d[i + 1] = d[i + 2] = lum < 0 ? 0 : lum > 255 ? 255 : lum; // grating around the grey mean
+          d[i + 3] = Math.min(255, env * 320);                   // Gaussian window, blends into the grey field
+        }
+      }
+      ctx.putImageData(img, 0, 0);
+      const t = newTex(cv);
+      t.colorSpace = THREE.SRGBColorSpace; // so the grey 138 matches the grey disc (no bright blob)
+      t.needsUpdate = true;
+      return t;
+    }
+
+    // Tumbling-E optotype. direction = where the prongs point; flankers add crowding.
+    function drawE(ctx, cx, cy, half, rot) {
+      ctx.save(); ctx.translate(cx, cy); ctx.rotate(rot);
+      const t = half * 0.36;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(-half, -half, t, 2 * half);   // spine (left)
+      ctx.fillRect(-half, -half, 2 * half, t);    // top prong
+      ctx.fillRect(-half, -t / 2, 2 * half, t);   // middle prong
+      ctx.fillRect(-half, half - t, 2 * half, t); // bottom prong
+      ctx.restore();
+    }
+    const E_ROT = { right: 0, down: Math.PI / 2, left: Math.PI, up: -Math.PI / 2 };
+    function makeOptotypeTexture(direction, crowding) {
+      const S = 1024; // high-res for crisp E optotypes
+      const cv = document.createElement('canvas'); cv.width = cv.height = S;
+      const ctx = cv.getContext('2d');
+      ctx.clearRect(0, 0, S, S);
+      const c = S / 2;
+      const dirs = ['right', 'down', 'left', 'up'];
+      if (crowding) {
+        // 5×5 grid; gap between letters = one E width; identify the CENTRE E.
+        const Ew = S * 0.102, half = Ew / 2, spacing = 2 * Ew;
+        for (let i = 0; i < 5; i++) for (let j = 0; j < 5; j++) {
+          const dir = (i === 2 && j === 2) ? direction : dirs[Math.floor(Math.random() * 4)];
+          drawE(ctx, c + (j - 2) * spacing, c + (i - 2) * spacing, half, E_ROT[dir]);
+        }
+      } else {
+        drawE(ctx, c, c, S * 0.14, E_ROT[direction]);
+      }
+      return newTex(cv);
+    }
+
+    // Oryx-styled button texture (rounded, aspect-correct)
+    function buttonTexture(text, planeW, planeH, style, opts = {}) {
+      const W = Math.max(128, Math.round(1700 * planeW));
+      const H = Math.max(128, Math.round(1700 * planeH));
+      const cv = document.createElement('canvas');
+      cv.width = W; cv.height = H;
+      const ctx = cv.getContext('2d');
+      ctx.clearRect(0, 0, W, H);
+      const pad = Math.round(Math.min(W, H) * 0.07);
+      const x = pad, y = pad, w = W - 2 * pad, h = H - 2 * pad;
+      const rFrac = opts.radiusFrac != null ? opts.radiusFrac : 0.34;
+      const r = Math.min(Math.round(Math.min(W, H) * rFrac), Math.round(h / 2));
+      const weight = opts.weight || 600;
+      let fill, border = null, txt;
+      if (style === 'primary') { fill = '#ffffff'; txt = '#08090b'; }
+      else if (style === 'accent') { fill = ORYX.accentHex; txt = '#0a0d1f'; }
+      else { fill = 'rgba(12,14,18,0.92)'; border = '#dfe4ea'; txt = '#eef1f5'; }
+      rr(ctx, x, y, w, h, r);
+      ctx.fillStyle = fill; ctx.fill();
+      if (border) { ctx.lineWidth = Math.max(3, Math.round(H * 0.025)); ctx.strokeStyle = border; ctx.stroke(); }
+      let fs = Math.round(h * 0.42);
+      const setFont = () => {
+        ctx.font = `${weight} ${fs}px system-ui, sans-serif`;
+        ctx.letterSpacing = `${Math.round(fs * (opts.letterSpacing || 0))}px`;
+      };
+      setFont();
+      const fitW = w * (opts.arrow ? 0.72 : 0.86);
+      while (ctx.measureText(text).width > fitW && fs > 8) { fs -= 2; setFont(); }
+      ctx.fillStyle = txt; ctx.textBaseline = 'middle';
+      const midY = H / 2 + H * 0.02;
+      if (opts.arrow) {
+        // text + a manually-drawn arrow, both vertically centred (the → glyph sits too low)
+        const aLen = fs * 0.85, gap = fs * 0.5;
+        ctx.textAlign = 'left';
+        const tw = ctx.measureText(text).width;
+        const sx = (W - (tw + gap + aLen)) / 2;
+        ctx.fillText(text, sx, midY);
+        const ax = sx + tw + gap;
+        ctx.strokeStyle = txt; ctx.lineWidth = Math.max(3, fs * 0.09); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(ax, midY); ctx.lineTo(ax + aLen, midY);
+        ctx.moveTo(ax + aLen - fs * 0.3, midY - fs * 0.3); ctx.lineTo(ax + aLen, midY); ctx.lineTo(ax + aLen - fs * 0.3, midY + fs * 0.3);
+        ctx.stroke();
+      } else {
+        ctx.textAlign = 'center';
+        ctx.fillText(text, W / 2, midY);
+      }
+      ctx.letterSpacing = '0px';
+      return newTex(cv);
+    }
+
+    const interactive = [];
+    function makeButton(text, w, h, style, onSelect, opts) {
+      const mesh = new THREE.Mesh(
+        new THREE.PlaneGeometry(w, h),
+        new THREE.MeshBasicMaterial({ map: buttonTexture(text, w, h, style, opts), transparent: true, alphaTest: 0.5 })
+      );
+      mesh.userData.onSelect = onSelect;
+      interactive.push(mesh);
+      rig.add(mesh);
+      return mesh;
+    }
+
+    // ---------------------------------------------------------------------------
+    // Stimulus circle + feedback flash
+    // ---------------------------------------------------------------------------
+    const circle = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ transparent: true }));
+    rig.add(circle);
+    function placeCircle(z, radius) {
+      const cy = LEVELS[curLevel - 1].mode === 'gabor' ? GABOR_Y : STIM_Y;
+      circle.position.set(0, cy, z);
+      const d = 2 * radius * PLANE_K * sizeScale; circle.scale.set(d, d, 1);
+    }
+
+    // Plain centred text (used for the "Get ready" lead-in, where the circle appears)
+    function textTexture(text, fontPx = 70) {
+      const W = 512, H = 160;
+      const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+      const ctx = cv.getContext('2d');
+      ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = ORYX.text;
+      ctx.font = `600 ${fontPx}px system-ui, sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(text, W / 2, H / 2);
+      return newTex(cv);
+    }
+    const readyText = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.6, 0.156),
+      new THREE.MeshBasicMaterial({ map: textTexture('Focus here'), transparent: true })
+    );
+    readyText.position.set(0, STIM_Y + 0.2, -2.2);
+    readyText.visible = false;
+    rig.add(readyText);
+
+    // Empty "focus" ring shown (with the text) at the spot the stimulus will appear
+    const focusRing = new THREE.Mesh(
+      new THREE.RingGeometry(0.04, 0.047, 48),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, transparent: true, opacity: 0 })
+    );
+    focusRing.visible = false;
+    rig.add(focusRing);
+
+    // Corner crosshairs framing the stimulus (Blur & Gabor levels) — thick bars
+    const crossMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    function makeCross() {
+      const g = new THREE.Group();
+      const arm = 0.105, thick = 0.007;
+      g.add(new THREE.Mesh(new THREE.PlaneGeometry(arm, thick), crossMat));
+      g.add(new THREE.Mesh(new THREE.PlaneGeometry(thick, arm), crossMat));
+      return g;
+    }
+    const frame = new THREE.Group();
+    [[-0.3, 0.3], [0.3, 0.3], [-0.3, -0.3], [0.3, -0.3]].forEach(([x, y]) => {
+      const cr = makeCross(); cr.position.set(x, y, -2.2); frame.add(cr);
+    });
+    frame.position.y = STIM_Y; // follow the stimulus down
+    frame.visible = false;
+    rig.add(frame);
+
+    // Grey display disc + white ring — the field the Gabor is shown on (Gabor levels)
+    const gaborField = new THREE.Group();
+    gaborField.add(new THREE.Mesh(new THREE.CircleGeometry(GABOR_R, 48), new THREE.MeshBasicMaterial({ color: GABOR_BG })));
+    gaborField.add(new THREE.Mesh(new THREE.RingGeometry(GABOR_R, GABOR_R + 0.015, 64), new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide })));
+    gaborField.position.set(0, GABOR_Y, -2.215); // just behind the patch & crosses
+    gaborField.visible = false;
+    rig.add(gaborField);
+
+    const flash = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.6, 1.6),
+      new THREE.MeshBasicMaterial({ color: ORYX.good, transparent: true, opacity: 0, depthTest: false, depthWrite: false })
+    );
+    flash.renderOrder = 999; flash.visible = false; scene.add(flash);
+    let flashT = 0; const FLASH_DUR = 0.55;
+    // Billboarded overlays (flash/fade) occlude bright content (AR room, depth corridor)
+    // and read as dark squares fixed in front of the head — suppress them there.
+    function isPassthrough() { return renderer.xr.isPresenting && screen === 'TRAINING' && LEVELS[curLevel - 1].ar; }
+    function overlaySuppressed() {
+      if (!renderer.xr.isPresenting || screen !== 'TRAINING') return false;
+      const m = LEVELS[curLevel - 1];
+      return m.ar || m.mode === 'depth' || m.mode === 'accommodation';
+    }
+    function triggerFlash(correct) {
+      if (overlaySuppressed()) return;
+      flash.material.color.set(correct ? ORYX.good : ORYX.bad); flashT = FLASH_DUR; flash.visible = true;
+    }
+
+    // Black fade for smooth transitions (dashboard ↔ session, level ↔ level)
+    const fade = new THREE.Mesh(
+      new THREE.PlaneGeometry(3, 3),
+      new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0, depthTest: false, depthWrite: false })
+    );
+    fade.renderOrder = 1000; fade.visible = false; scene.add(fade);
+    let fadePhase = 'idle', fadeT = 0, fadeCb = null;
+    const FADE_DUR = 0.32;
+    function transition(cb) {
+      if (fadePhase !== 'idle' || overlaySuppressed()) { cb(); return; } // no fade over AR / corridor
+      fadePhase = 'out'; fadeT = 0; fadeCb = cb; fade.visible = true;
+    }
+
+    // ---------------------------------------------------------------------------
+    // Audio
+    // ---------------------------------------------------------------------------
+    let audioCtx = null;
+    function initAudio() {
+      if (!audioCtx) { try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return; } }
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+    }
+    function note(freq, start, dur, type = 'sine', vol = 0.2) {
+      if (!audioCtx) return;
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type = type; o.frequency.value = freq; o.connect(g); g.connect(audioCtx.destination);
+      const t = audioCtx.currentTime + start;
+      g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      o.start(t); o.stop(t + dur + 0.02);
+    }
+    const sndTick    = () => note(880, 0, 0.05, 'square', 0.1);
+    const sndCorrect = () => { note(660, 0, 0.10, 'sine', 0.2); note(990, 0.1, 0.14, 'sine', 0.2); };
+    const sndWrong   = () => { note(420, 0, 0.12, 'sine', 0.18); note(300, 0.12, 0.18, 'sine', 0.18); };
+
+    // ---------------------------------------------------------------------------
+    // Intro logo video (played as a billboarded splash on entering VR)
+    // ---------------------------------------------------------------------------
+    const logoVideo = document.getElementById('logoVideo');
+    const logoTex = new THREE.VideoTexture(logoVideo);
+    logoTex.colorSpace = THREE.SRGBColorSpace;
+    const logoPlane = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.92, 1.08), // 20% smaller
+      new THREE.MeshBasicMaterial({ map: logoTex, depthTest: false, depthWrite: false })
+    );
+    logoPlane.renderOrder = 2000;
+    logoPlane.visible = false;
+    scene.add(logoPlane);
+    let logoPlaying = false;
+    logoVideo.addEventListener('loadedmetadata', () => {
+      const a = (logoVideo.videoWidth && logoVideo.videoHeight) ? logoVideo.videoHeight / logoVideo.videoWidth : 0.5625;
+      logoPlane.scale.set(1, (1.92 * a) / 1.08, 1); // keep video aspect
+    });
+    function finishLogo() {
+      logoPlane.visible = false; logoPlaying = false;
+      if (screen !== 'DASHBOARD') transition(() => setScreen('DASHBOARD')); // fade the dashboard in
+    }
+    logoVideo.addEventListener('ended', finishLogo);
+    function playLogo() {
+      try { logoVideo.currentTime = 0; } catch (e) {}
+      const p = logoVideo.play();
+      if (p && p.catch) p.catch(() => finishLogo()); // if it can't play, go straight to dashboard
+      logoPlane.visible = true; logoPlaying = true;
+      // fallback: some headsets don't fire 'ended' in immersive → force-finish so the
+      // logo plane never lingers (a stuck black last frame in front of the head)
+      const dur = (logoVideo.duration && isFinite(logoVideo.duration)) ? logoVideo.duration : 3.5;
+      setTimeout(() => { if (logoPlaying) finishLogo(); }, dur * 1000 + 800);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Dashboard panel (the home screen, drawn to match the Oryx mockup)
+    // ---------------------------------------------------------------------------
+    const dashCv = document.createElement('canvas');
+    dashCv.width = 1600; dashCv.height = 1050;
+    const dashTex = newTex(dashCv);
+    const dashPanel = new THREE.Mesh(new THREE.PlaneGeometry(2.75, 1.8), new THREE.MeshBasicMaterial({ map: dashTex, transparent: true }));
+    dashPanel.position.set(0, 0, -2.3);
+    rig.add(dashPanel);
+
+    function drawDashboard() {
+      const c = dashCv.getContext('2d'), W = 1600, H = 1050;
+      c.clearRect(0, 0, W, H);
+      rr(c, 2, 2, W - 4, H - 4, 34); c.fillStyle = ORYX.panel; c.fill();
+      c.lineWidth = 2; c.strokeStyle = ORYX.border; c.stroke();
+      c.textBaseline = 'alphabetic';
+
+      // header
+      c.textAlign = 'left';
+      c.fillStyle = ORYX.accentHex; c.font = 'bold 60px system-ui, sans-serif';
+      c.fillText('Essential training', 70, 120);
+      c.fillText('program', 70, 188);
+      c.fillStyle = ORYX.accentHex; c.fillRect(70, 204, 470, 4);
+      c.fillStyle = ORYX.dim; c.font = '26px system-ui, sans-serif';
+      c.fillText('Track your progress, status and key stats', 72, 250);
+
+      // header: bell + avatar (the in-scene Exit button sits to their left)
+      c.beginPath(); c.arc(1448, 92, 24, 0, 7); c.fillStyle = '#0e1116'; c.fill();
+      c.lineWidth = 1.5; c.strokeStyle = ORYX.border; c.stroke();
+      c.beginPath(); c.arc(1512, 92, 24, 0, 7); c.fillStyle = '#3a3f47'; c.fill();
+      c.fillStyle = ORYX.dim; c.font = '20px system-ui, sans-serif'; c.textAlign = 'left';
+      c.textBaseline = 'middle'; c.fillText('Leo ⌄', 1544, 92); c.textBaseline = 'alphabetic';
+
+      // three cards
+      const cy = 290, ch = 300, m = 70, gap = 34;
+      const cw = (W - 2 * m - 2 * gap) / 3;
+      const cx = [m, m + cw + gap, m + 2 * (cw + gap)];
+      for (const x of cx) { rr(c, x, cy, cw, ch, 22); c.fillStyle = ORYX.card; c.fill(); }
+      c.textAlign = 'left';
+
+      // card 1 — total sessions (live)
+      c.fillStyle = ORYX.dim; c.font = '24px system-ui, sans-serif';
+      c.fillText('Total sessions completed', cx[0] + 28, cy + 50);
+      const frac = Math.min(1, stats.sessions / SESSION_GOAL);
+      c.fillStyle = '#2a2f37'; rr(c, cx[0] + 28, cy + 120, cw - 56, 8, 4); c.fill();
+      if (frac > 0) { c.fillStyle = ORYX.accentHex; rr(c, cx[0] + 28, cy + 120, (cw - 56) * frac, 8, 4); c.fill(); }
+      const big = String(stats.sessions);
+      c.fillStyle = stats.sessions > 0 ? ORYX.text : '#3a4049';
+      c.font = 'bold 130px system-ui, sans-serif';
+      c.fillText(big, cx[0] + 28, cy + 250);
+      const bigW = c.measureText(big).width;
+      c.fillStyle = ORYX.faint; c.font = '40px system-ui, sans-serif';
+      c.fillText('/ ' + SESSION_GOAL, cx[0] + 28 + bigW + 20, cy + 250);
+
+      // card 2 — previous session (live)
+      const p = stats.prev;
+      c.fillStyle = ORYX.dim; c.font = '24px system-ui, sans-serif';
+      c.fillText('Previous session', cx[1] + 28, cy + 50);
+      c.fillStyle = ORYX.faint; c.font = '22px system-ui, sans-serif';
+      c.fillText('Focus performance', cx[1] + 28, cy + 110);
+      c.fillStyle = p ? '#56c98a' : '#3a4049'; c.font = 'bold 34px system-ui, sans-serif';
+      c.fillText(p ? p.acc + '%' : '—', cx[1] + 28, cy + 152);
+      c.fillStyle = ORYX.faint; c.font = '22px system-ui, sans-serif';
+      c.fillText('Difficulty level', cx[1] + 28, cy + 212);
+      c.fillStyle = p ? ORYX.text : '#3a4049'; c.font = 'bold 34px system-ui, sans-serif';
+      const diff = p ? (p.mode === 'acuity' ? `Δblur ${p.metric}px` : `Δz ${p.metric} m`) : '— —';
+      c.fillText(diff, cx[1] + 28, cy + 254);
+
+      // card 3 — accuracy per level (live bars)
+      c.fillStyle = ORYX.dim; c.font = '24px system-ui, sans-serif';
+      c.fillText('Accuracy by level', cx[2] + 28, cy + 50);
+      const bx = cx[2] + 40, bw = 46, bgap = 22, maxH = 180;
+      for (let i = 0; i < 5; i++) {
+        const acc = stats.best[i + 1] || 0;
+        const hgt = 14 + (acc / 100) * (maxH - 14);
+        c.fillStyle = acc >= 80 ? ORYX.accentHex : acc > 0 ? '#5566c9' : '#3a4049';
+        rr(c, bx + i * (bw + bgap), cy + ch - 40 - hgt, bw, hgt, 6); c.fill();
+        c.fillStyle = ORYX.faint; c.font = '18px system-ui, sans-serif'; c.textAlign = 'center';
+        c.fillText('L' + (i + 1), bx + i * (bw + bgap) + bw / 2, cy + ch - 16);
+        c.textAlign = 'left';
+      }
+
+      // bottom: streak + start slot
+      const by = 640, bh = 150;
+      rr(c, m, by, 900, bh, 22); c.fillStyle = ORYX.card; c.fill();
+      c.fillStyle = ORYX.text; c.font = '600 26px system-ui, sans-serif'; c.textAlign = 'left';
+      c.fillText('Streak', m + 30, by + 88);
+      const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      const dx0 = m + 180, dgap = 100;
+      c.textAlign = 'center';
+      for (let i = 0; i < 7; i++) {
+        const dx = dx0 + i * dgap;
+        c.beginPath(); c.arc(dx, by + 58, 24, 0, 7);
+        if (stats.weekdays[i]) { c.fillStyle = ORYX.accentHex; c.fill(); }
+        else { c.strokeStyle = '#3a4049'; c.lineWidth = 3; c.stroke(); }
+        c.fillStyle = stats.weekdays[i] ? ORYX.text : ORYX.dim;
+        c.font = '20px system-ui, sans-serif';
+        c.fillText(days[i], dx, by + 118);
+      }
+      // (no slot drawn — the START button mesh fills this area itself)
+
+      dashTex.needsUpdate = true;
+    }
+    drawDashboard();
+
+    // Dashboard START button (overlaid on the slot)
+    // Aligned to the dashboard "start" slot (canvas centre ≈ 1268,715 on 1600x1050),
+    // and sitting just in front of the panel so it doesn't look like it floats.
+    const dashStartBtn = makeButton('START SESSION', 0.9, 0.256, 'primary', () => startTraining(),
+      { letterSpacing: 0.14, weight: 700, radiusFrac: 0.15, arrow: true });
+    dashStartBtn.position.set(0.804, -0.326, -2.296);
+    const dashExitBtn = makeButton('Exit', 0.34, 0.12, 'secondary', () => exitVR());
+    dashExitBtn.position.set(0.85, 0.742, -2.296); // aligned with the bell/avatar row
+
+    // ---------------------------------------------------------------------------
+    // Training UI: level chips, progress bar, home/exit, response buttons
+    // ---------------------------------------------------------------------------
+    function exitVR() { const s = renderer.xr.getSession(); if (s) s.end(); }
+
+    // Top menu = categories; some open a sub-row (Circle Blur, Gabor).
+    const CATS = [
+      { label: 'E test', n: 10 },
+      { label: 'Circle Blur', subs: [{ n: 1, label: 'Large' }, { n: 2, label: 'Medium' }, { n: 3, label: 'Small' }] },
+      { label: 'Distance', n: 4 },
+      { label: 'Augmented Reality', n: 5 },
+      { label: 'Gabor', subs: [{ n: 6, label: 'Coarse' }, { n: 7, label: 'Medium' }, { n: 8, label: 'Fine' }] },
+      { label: 'Distance E test', n: 11 },
+      { label: 'Left/Right eye', n: 13 },
+    ];
+    // Session = one level per top-bar category; sub-categories use Medium by default
+    const catLevel = (cat) => cat.subs ? (cat.subs[1] || cat.subs[0]).n : cat.n;
+    const SESSION_ORDER = CATS.map(catLevel);
+    const CHIP_Y = 0.92, SUB_Y = 0.79;
+    const CHIP_SPAN = 2.5, chipStep = CHIP_SPAN / CATS.length, chipW = chipStep * 0.94, chipH = 0.095;
+    const edgeX = CHIP_SPAN / 2 + 0.13;
+
+    const homeBtn = makeButton('⌂', 0.12, chipH, 'secondary', () => transition(() => setScreen('DASHBOARD')));
+    homeBtn.position.set(-edgeX, CHIP_Y, -2.2);
+    const exitBtn = makeButton('EXIT', 0.14, chipH, 'secondary', exitVR);
+    exitBtn.position.set(edgeX, CHIP_Y, -2.2);
+
+    const catChips = CATS.map((cat, i) => {
+      const m = makeButton(cat.label, chipW, chipH, 'secondary', () => selectLevel(cat.subs ? (cat.subs[1] || cat.subs[0]).n : cat.n)); // default to Medium
+      m.position.set(-CHIP_SPAN / 2 + chipStep / 2 + i * chipStep, CHIP_Y, -2.2);
+      m.userData.cat = cat;
+      m.userData.texNormal = m.material.map;
+      m.userData.texActive = buttonTexture(cat.label, chipW, chipH, 'accent');
+      return m;
+    });
+
+    // Reusable sub-row buttons (Large/Medium/Small, etc.)
+    const SUB_W = 0.3, SUB_H = 0.09, SUB_GAP = 0.04;
+    const subBtns = [0, 1, 2].map(() => {
+      const m = makeButton('', SUB_W, SUB_H, 'secondary', () => selectLevel(m.userData.level));
+      m.visible = false;
+      return m;
+    });
+    function showSubs(cat) {
+      const subs = cat.subs, total = subs.length * SUB_W + (subs.length - 1) * SUB_GAP;
+      subBtns.forEach((b, i) => {
+        if (i >= subs.length) { b.visible = false; return; }
+        const s = subs[i];
+        b.userData.level = s.n;
+        b.userData.texNormal = buttonTexture(s.label, SUB_W, SUB_H, 'secondary');
+        b.userData.texActive = buttonTexture(s.label, SUB_W, SUB_H, 'accent');
+        b.position.set(-total / 2 + SUB_W / 2 + i * (SUB_W + SUB_GAP), SUB_Y, -2.2);
+        b.visible = true;
+      });
+    }
+    function hideSubs() { subBtns.forEach((b) => b.visible = false); }
+
+    const progCv = document.createElement('canvas');
+    progCv.width = 1024; progCv.height = 256;
+    const progTex = newTex(progCv);
+    const progPanel = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 0.375), new THREE.MeshBasicMaterial({ map: progTex, transparent: true }));
+    progPanel.position.set(0, 0.52, -2.2);
+    rig.add(progPanel);
+
+    function drawProgress() {
+      const c = progCv.getContext('2d'), W = 1024, H = 256;
+      c.clearRect(0, 0, W, H);
+      rr(c, 4, 4, W - 8, H - 8, 26); c.fillStyle = 'rgba(10,12,16,0.92)'; c.fill();
+      c.lineWidth = 2; c.strokeStyle = ORYX.border; c.stroke();
+      c.textAlign = 'center';
+
+      c.fillStyle = ORYX.accentHex; c.font = 'bold 38px system-ui, sans-serif';
+      const title = LEVELS[curLevel - 1].mode === 'lreye'
+        ? (state.dichEye === 1 ? 'Left eye' : 'Right eye')
+        : LEVELS[curLevel - 1].name;
+      c.fillText(title, 512, 52);
+
+      // 10-segment progress bar
+      const N = LEVELS[curLevel - 1].trials || CONFIG.trialsPerLevel, x0 = 60, x1 = 964, y = 86, h = 30, g = 8;
+      const segW = (x1 - x0 - g * (N - 1)) / N;
+      for (let i = 0; i < N; i++) {
+        const x = x0 + i * (segW + g);
+        rr(c, x, y, segW, h, 6);
+        c.fillStyle = i < state.trial ? ORYX.accentHex : '#20242c';
+        c.fill();
+      }
+      c.fillStyle = ORYX.dim; c.font = '26px system-ui, sans-serif';
+      c.fillText(`Trial ${state.trial} / ${N}`, 512, 165);
+
+      const L = LEVELS[curLevel - 1];
+      let prompt;
+      if (L.mode === 'gabor') prompt = 'Which had the stripes?';
+      else if (L.mode === 'optotype' || L.mode === 'accommodation' || L.mode === 'dichoptic') prompt = 'Which way does the E point?';
+      else if (L.mode === 'crowding') prompt = 'Centre E — which way?';
+      else if (L.mode === 'lreye') prompt = 'Which was SHARPER?';
+      else { const verb = L.mode === 'acuity' ? (CONFIG.pickSharper ? 'SHARPER' : 'more BLURRED') : 'NEARER'; prompt = `Which was ${verb}?`; }
+      c.font = '32px system-ui, sans-serif';
+      c.fillStyle = ORYX.text;
+      c.fillText(prompt, 512, 218);
+
+      progTex.needsUpdate = true;
+    }
+
+    const btn1 = makeButton('1', 0.22, 0.22, 'secondary', () => respond(1));
+    const btn2 = makeButton('2', 0.22, 0.22, 'secondary', () => respond(2));
+    btn1.position.set(-0.25, -0.62, -2.0);
+    btn2.position.set( 0.25, -0.62, -2.0);
+
+    // Direction buttons for optotype / crowding (↑ ↓ ← →)
+    const dirButtons = [['↑', 'up', 0, -0.4], ['↓', 'down', 0, -0.72], ['←', 'left', -0.17, -0.56], ['→', 'right', 0.17, -0.56]]
+      .map(([lbl, dir, x, y]) => {
+        const m = makeButton(lbl, 0.13, 0.13, 'secondary', () => respondDir(dir));
+        m.position.set(x, y, -2.0);
+        return m;
+      });
+
+    // -------------------------------------------------------------------------
+    // Calibration screen
+    // -------------------------------------------------------------------------
+    const calibCv = document.createElement('canvas'); calibCv.width = 1024; calibCv.height = 560;
+    const calibTex = newTex(calibCv);
+    const calibPanel = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 0.6), new THREE.MeshBasicMaterial({ map: calibTex, transparent: true }));
+    calibPanel.position.set(0, 0.3, -2.2);
+    rig.add(calibPanel);
+
+    function getIPD() {
+      const cam = renderer.xr.getCamera();
+      if (cam && cam.cameras && cam.cameras.length >= 2) {
+        const a = new THREE.Vector3().setFromMatrixPosition(cam.cameras[0].matrixWorld);
+        const b = new THREE.Vector3().setFromMatrixPosition(cam.cameras[1].matrixWorld);
+        return a.distanceTo(b);
+      }
+      return null;
+    }
+    function drawCalib() {
+      const c = calibCv.getContext('2d'), W = 1024, H = 560;
+      c.clearRect(0, 0, W, H);
+      rr(c, 4, 4, W - 8, H - 8, 28); c.fillStyle = ORYX.panel; c.fill();
+      c.lineWidth = 2; c.strokeStyle = ORYX.border; c.stroke();
+      c.textAlign = 'center';
+      c.fillStyle = ORYX.accentHex; c.font = 'bold 50px system-ui, sans-serif'; c.fillText('Calibration', W / 2, 90);
+      c.fillStyle = ORYX.dim; c.font = '28px system-ui, sans-serif'; c.fillText('Stimulus size', W / 2, 190);
+      c.fillStyle = ORYX.text; c.font = 'bold 60px system-ui, sans-serif'; c.fillText(Math.round(sizeScale * 100) + '%', W / 2, 260);
+      const ipd = getIPD();
+      c.fillStyle = ORYX.dim; c.font = '28px system-ui, sans-serif'; c.fillText('IPD (read-only)', W / 2, 370);
+      c.fillStyle = ORYX.text; c.font = 'bold 48px system-ui, sans-serif';
+      c.fillText(ipd ? Math.round(ipd * 1000) + ' mm' : '— (VR only)', W / 2, 440);
+      calibTex.needsUpdate = true;
+    }
+    function recenter() {
+      const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+      const p = new THREE.Vector3(), q = new THREE.Quaternion();
+      cam.getWorldPosition(p); cam.getWorldQuaternion(q);
+      const e = new THREE.Euler().setFromQuaternion(q, 'YXZ');
+      rig.position.set(p.x, 0, p.z);
+      rig.rotation.y = e.y;
+    }
+
+    const gearBtn = makeButton('⚙', 0.1, 0.1, 'secondary', () => { drawCalib(); transition(() => setScreen('CALIB')); });
+    gearBtn.position.set(-1.45, -0.78, -2.2);
+    const recenterBtn = makeButton('Recenter', 0.36, 0.12, 'primary', () => recenter());
+    recenterBtn.position.set(0, -0.16, -2.2);
+    const sizeDownBtn = makeButton('size −', 0.22, 0.12, 'secondary', () => { sizeScale = Math.max(0.5, +(sizeScale - 0.1).toFixed(2)); drawCalib(); });
+    sizeDownBtn.position.set(-0.24, -0.36, -2.2);
+    const sizeUpBtn = makeButton('size +', 0.22, 0.12, 'secondary', () => { sizeScale = Math.min(2, +(sizeScale + 0.1).toFixed(2)); drawCalib(); });
+    sizeUpBtn.position.set(0.24, -0.36, -2.2);
+    const calibCloseBtn = makeButton('Close', 0.3, 0.12, 'secondary', () => transition(() => setScreen('DASHBOARD')));
+    calibCloseBtn.position.set(0, -0.56, -2.2);
+    const calibMeshes = [calibPanel, recenterBtn, sizeDownBtn, sizeUpBtn, calibCloseBtn];
+
+    // ---------------------------------------------------------------------------
+    // State + screen/phase machine
+    // ---------------------------------------------------------------------------
+    let screen = 'DASHBOARD';
+    let curLevel = 1;
+    let sizeScale = 1; // global stimulus-size multiplier (calibration)
+    const state = {
+      trial: 0, blurPx: CONFIG.baseBlurPx, dz: CONFIG.baseDz, contrast: CONFIG.baseContrast,
+      optoSize: CONFIG.baseOpto, targetDir: 'up', dichEye: 1,
+      phase: 'IDLE', phaseT: 0,
+      intervals: [null, null], target: 1,
+      lastResult: '', history: [],
+    };
+
+    function showTrainingMeshes(v) {
+      catChips.forEach((m) => m.visible = v);
+      homeBtn.visible = v; exitBtn.visible = v; progPanel.visible = v;
+      if (!v) hideSubs();
+    }
+    function setScreen(s) {
+      screen = s;
+      const dash = s === 'DASHBOARD', train = s === 'TRAINING', cal = s === 'CALIB';
+      dashPanel.visible = dash; dashStartBtn.visible = dash; dashExitBtn.visible = dash;
+      showTrainingMeshes(train);
+      gearBtn.visible = dash || train;
+      calibMeshes.forEach((m) => m.visible = cal);
+      if (!train) {
+        circle.visible = fixation.visible = btn1.visible = btn2.visible = false;
+        dirButtons.forEach((b) => b.visible = false);
+        readyText.visible = false; focusRing.visible = false;
+        corridor.visible = false; frame.visible = false; gaborField.visible = false;
+        state.phase = 'IDLE';
+      }
+      updateBackground();
+    }
+
+    function configureLevel(n) {
+      curLevel = Math.max(1, Math.min(LEVELS.length, n));
+      // which category holds this level?
+      const curCat = CATS.find((cat) => cat.subs ? cat.subs.some((s) => s.n === curLevel) : cat.n === curLevel);
+      catChips.forEach((m) => {
+        const active = m.userData.cat === curCat;
+        m.material.map = active ? m.userData.texActive : m.userData.texNormal;
+        m.material.needsUpdate = true;
+        m.scale.setScalar(active ? 1.12 : 1.0);
+      });
+      if (curCat && curCat.subs) {
+        showSubs(curCat);
+        subBtns.forEach((b) => {
+          if (!b.visible) return;
+          const active = b.userData.level === curLevel;
+          b.material.map = active ? b.userData.texActive : b.userData.texNormal;
+          b.material.needsUpdate = true;
+          b.scale.setScalar(active ? 1.12 : 1.0);
+        });
+      } else {
+        hideSubs();
+      }
+      const mode = LEVELS[curLevel - 1].mode;
+      corridor.visible = (mode === 'depth' && !LEVELS[curLevel - 1].ar) || mode === 'accommodation';
+      frame.position.y = mode === 'gabor' ? GABOR_Y : STIM_Y; // crosses inside the grey disc for gabor
+      frame.visible = false; // shown per-phase (only with the stimulus) in setPhase
+      gaborField.visible = mode === 'gabor'; // grey display disc stays for the whole gabor level
+      state.trial = 0; state.lastResult = '';
+      state.blurPx = CONFIG.baseBlurPx; state.dz = CONFIG.baseDz; state.contrast = CONFIG.baseContrast;
+      state.optoSize = CONFIG.baseOpto;
+      updateBackground();
+    }
+
+    function startTraining() { initAudio(); transition(() => { setScreen('TRAINING'); configureLevel(SESSION_ORDER[0]); setPhase('PRESTART'); }); }
+    function selectLevel(n) { initAudio(); transition(() => { if (screen !== 'TRAINING') setScreen('TRAINING'); configureLevel(n); setPhase('PRESTART'); }); }
+
+    function buildIntervals() {
+      const L = LEVELS[curLevel - 1];
+      if (L.mode === 'acuity' || L.mode === 'lreye') {
+        const sharpInterval = Math.random() < 0.5 ? 1 : 2;
+        state.target = CONFIG.pickSharper ? sharpInterval : (sharpInterval === 1 ? 2 : 1);
+        for (let i = 1; i <= 2; i++) {
+          const blur = i === sharpInterval ? 0 : state.blurPx;
+          state.intervals[i - 1] = { tex: blur ? makeCircleTexture(blur) : sharpTex, z: L.z, radius: L.radius };
+        }
+      } else if (L.mode === 'gabor') {
+        const patternInterval = Math.random() < 0.5 ? 1 : 2; // the one that shows the patch
+        const other = patternInterval === 1 ? 2 : 1;
+        state.target = patternInterval;
+        state.intervals[patternInterval - 1] = { tex: makeGaborTexture(state.contrast, L.cycles), z: L.z, radius: L.radius };
+        state.intervals[other - 1] = { empty: true }; // the other interval shows nothing
+      } else {
+        const nearInterval = Math.random() < 0.5 ? 1 : 2;
+        state.target = nearInterval;
+        const nearZ = L.zRef + state.dz / 2, farZ = L.zRef - state.dz / 2;
+        for (let i = 1; i <= 2; i++) {
+          const z = i === nearInterval ? nearZ : farZ;
+          state.intervals[i - 1] = { tex: sharpTex, z, radius: L.radius };
+        }
+      }
+    }
+    function showOptotype() {
+      const L = LEVELS[curLevel - 1];
+      circle.material.map = makeOptotypeTexture(state.targetDir, L.mode === 'crowding');
+      circle.material.needsUpdate = true;
+      // dichoptic: show the E to one eye only (layer 1 = left, 2 = right); else both eyes
+      circle.layers.set(L.mode === 'dichoptic' ? state.dichEye : 0);
+      let z = L.z, distK = 1;
+      if (L.mode === 'accommodation') {
+        // alternate near / far each trial; fixed physical size, so it visibly
+        // looms large up close and shrinks far away (natural perspective).
+        z = (state.trial % 2 === 1) ? L.nearZ : L.farZ;
+      }
+      circle.position.set(0, STIM_Y, z);
+      const gridK = L.mode === 'crowding' ? 2.74 : 1; // keep the centre E ≈ single-optotype size
+      const d = 2 * state.optoSize * gridK * distK * sizeScale;
+      circle.scale.set(d, d, 1);
+      circle.visible = true;
+    }
+    function showInterval(n) {
+      const iv = state.intervals[n - 1];
+      circle.layers.set(LEVELS[curLevel - 1].mode === 'lreye' ? state.dichEye : 0); // one eye for L/R-eye, both otherwise
+      if (iv.empty) { circle.visible = false; return; } // this interval shows nothing
+      circle.material.map = iv.tex; circle.material.needsUpdate = true;
+      placeCircle(iv.z, iv.radius); circle.visible = true;
+    }
+    function setPhase(p) {
+      state.phase = p; state.phaseT = 0;
+      circle.visible = false; fixation.visible = false; btn1.visible = btn2.visible = false;
+      dirButtons.forEach((b) => b.visible = false);
+      readyText.visible = focusRing.visible = (p === 'PRESTART'); // "Focus here" + empty ring lead-in
+      if (p === 'PRESTART') {
+        const L = LEVELS[curLevel - 1];
+        const cy = L.mode === 'gabor' ? GABOR_Y : STIM_Y;
+        readyText.position.set(0, cy + 0.22, -2.2);
+        // ring at the depth & size of the first stimulus
+        let rz = -2.2, rr = 0.0435;
+        if (L.mode === 'depth') { rz = L.zRef; rr = L.radius; }
+        else if (L.mode === 'accommodation') { rz = L.nearZ; rr = state.optoSize; }
+        focusRing.position.set(0, cy, rz);
+        focusRing.scale.setScalar(rr / 0.0435);
+        readyText.material.opacity = 0; focusRing.material.opacity = 0;
+      }
+      const fmode = LEVELS[curLevel - 1].mode; // crosshairs only while a stimulus is on screen
+      frame.visible = (p === 'STIM1' || p === 'STIM2') && (fmode === 'acuity' || fmode === 'gabor');
+      if (p === 'STIM1') { showInterval(1); sndTick(); }
+      else if (p === 'STIM2') { showInterval(2); sndTick(); }
+      else if (p === 'STIMID') { showOptotype(); sndTick(); }            // E shown briefly
+      else if (p === 'RESPID') { dirButtons.forEach((b) => b.visible = true); } // then it's gone, answer
+      else if (p === 'RESPONSE') btn1.visible = btn2.visible = true;
+      drawProgress();
+    }
+    function newTrial() {
+      state.trial++; state.lastResult = '';
+      const mode = LEVELS[curLevel - 1].mode;
+      if (mode === 'lreye') state.dichEye = state.trial <= 10 ? 1 : 2; // first 10 left, next 10 right
+      if (mode === 'optotype' || mode === 'crowding' || mode === 'accommodation' || mode === 'dichoptic') {
+        state.targetDir = ['up', 'down', 'left', 'right'][Math.floor(Math.random() * 4)];
+        if (mode === 'dichoptic') state.dichEye = Math.random() < 0.5 ? 1 : 2; // 1 = left eye, 2 = right
+        setPhase('STIMID');
+      } else {
+        buildIntervals(); setPhase('STIM1');
+      }
+    }
+    function respondDir(dir) {
+      if (state.phase !== 'STIMID' && state.phase !== 'RESPID') return;
+      const correct = dir === state.targetDir;
+      state.optoSize = correct ? Math.max(CONFIG.minOpto, state.optoSize - CONFIG.optoStepDown)
+                               : Math.min(CONFIG.maxOpto, state.optoSize + CONFIG.optoStepUp);
+      state.lastResult = correct ? 'CORRECT' : 'WRONG';
+      state.history.push({ level: curLevel, trial: state.trial, target: state.targetDir, choice: dir, metric: +state.optoSize.toFixed(3), correct });
+      triggerFlash(correct);
+      (correct ? sndCorrect : sndWrong)();
+      setPhase('ITI');
+    }
+
+    function endLevel() {
+      // advance to the next category (Medium for sub-categories), regardless of which sub you're on
+      const ci = CATS.findIndex((cat) => cat.subs ? cat.subs.some((s) => s.n === curLevel) : cat.n === curLevel);
+      const nextCat = CATS[ci + 1];
+      if (nextCat) transition(() => { configureLevel(catLevel(nextCat)); setPhase('PRESTART'); });
+      else transition(() => setScreen('DASHBOARD'));
+    }
+
+    function respond(interval) {
+      if (state.phase !== 'RESPONSE') return;
+      const L = LEVELS[curLevel - 1];
+      const correct = interval === state.target;
+      let metric;
+      if (L.mode === 'acuity' || L.mode === 'lreye') {
+        state.blurPx = correct ? Math.max(CONFIG.minBlurPx, state.blurPx - CONFIG.stepDownPx)
+                               : Math.min(CONFIG.maxBlurPx, state.blurPx + CONFIG.stepUpPx);
+        metric = state.blurPx;
+      } else if (L.mode === 'gabor') {
+        state.contrast = correct ? Math.max(CONFIG.minContrast, state.contrast - CONFIG.ctStepDown)
+                                 : Math.min(CONFIG.maxContrast, state.contrast + CONFIG.ctStepUp);
+        metric = +state.contrast.toFixed(3);
+      } else {
+        state.dz = correct ? Math.max(CONFIG.minDz, state.dz - CONFIG.dzStepDown)
+                           : Math.min(CONFIG.maxDz, state.dz + CONFIG.dzStepUp);
+        metric = state.dz;
+      }
+      state.lastResult = correct ? 'CORRECT' : 'WRONG';
+      state.history.push({ level: curLevel, trial: state.trial, target: state.target, choice: interval, metric: +metric.toFixed(3), correct });
+      triggerFlash(correct);
+      (correct ? sndCorrect : sndWrong)();
+      setPhase('ITI');
+    }
+
+    // ---------------------------------------------------------------------------
+    // XR entry
+    // ---------------------------------------------------------------------------
+    const enterBtn = document.getElementById('enterBtn');
+    async function enterXR() {
+      if (!navigator.xr) { enterBtn.textContent = 'XR NOT SUPPORTED'; return; }
+      if (renderer.xr.isPresenting) { exitVR(); return; }
+      initAudio();
+      const opts = { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'] };
+      let session;
+      try { session = await navigator.xr.requestSession('immersive-ar', opts); }
+      catch (e) { try { session = await navigator.xr.requestSession('immersive-vr', opts); } catch (e2) { enterBtn.textContent = 'XR UNAVAILABLE'; return; } }
+      await renderer.xr.setSession(session);
+    }
+    enterBtn.addEventListener('click', enterXR);
+    document.getElementById('dashBtn').addEventListener('click', () => { enterBtn.style.display = 'none'; setScreen('DASHBOARD'); }); // PC preview of the dashboard
+    renderer.xr.addEventListener('sessionstart', () => {
+      enterBtn.textContent = 'Exit';
+      setScreen('SPLASH');                 // black, nothing shown
+      updateBackground();
+      try { logoVideo.load(); } catch (e) {}
+      setTimeout(() => { if (renderer.xr.isPresenting) playLogo(); }, 2000); // 2s black → then the logo
+    });
+    renderer.xr.addEventListener('sessionend', () => {
+      enterBtn.textContent = 'Oryx';
+      logoPlane.visible = false; logoPlaying = false;
+      setScreen('SPLASH');                 // back to the Enter-VR-only screen (no dashboard)
+      updateBackground();
+    });
+
+    // ---------------------------------------------------------------------------
+    // Input
+    // ---------------------------------------------------------------------------
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+    function hit(obj) { while (obj && !obj.userData.onSelect) obj = obj.parent; if (obj && obj.userData.onSelect) obj.userData.onSelect(); }
+    renderer.domElement.addEventListener('pointerdown', (e) => {
+      if (renderer.xr.isPresenting) return;
+      pointer.x = (e.clientX / window.innerWidth) * 2 - 1;
+      pointer.y = -(e.clientY / window.innerHeight) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+      const hits = raycaster.intersectObjects(interactive.filter((o) => o.visible));
+      if (hits.length) hit(hits[0].object);
+    });
+    window.addEventListener('keydown', (e) => {
+      const lvl = parseInt(e.key, 10);
+      if (lvl >= 1 && lvl <= LEVELS.length) selectLevel(lvl);
+      if (e.key === ' ' && screen === 'DASHBOARD') startTraining();
+      if (e.key === 'h' || e.key === 'H') transition(() => setScreen('DASHBOARD'));
+      if (e.key === 'ArrowUp') respondDir('up');
+      else if (e.key === 'ArrowDown') respondDir('down');
+      else if (e.key === 'ArrowLeft') respondDir('left');
+      else if (e.key === 'ArrowRight') respondDir('right');
+    });
+
+    let dragging = false, px = 0, py = 0, yaw = 0, pitch = 0;
+    renderer.domElement.addEventListener('mousedown', (e) => { dragging = true; px = e.clientX; py = e.clientY; });
+    window.addEventListener('mouseup', () => { dragging = false; });
+    window.addEventListener('mousemove', (e) => {
+      if (!dragging || renderer.xr.isPresenting) return;
+      yaw -= (e.clientX - px) * 0.003; pitch -= (e.clientY - py) * 0.003;
+      pitch = Math.max(-1.2, Math.min(1.2, pitch)); px = e.clientX; py = e.clientY;
+      camera.rotation.set(pitch, yaw, 0, 'YXZ');
+    });
+
+    const RAY_LEN = 6;
+    const controllers = [];
+    function rayFromController(c) {
+      const m = new THREE.Matrix4().extractRotation(c.matrixWorld);
+      raycaster.ray.origin.setFromMatrixPosition(c.matrixWorld);
+      raycaster.ray.direction.set(0, 0, -1).applyMatrix4(m);
+      return raycaster.intersectObjects(interactive.filter((o) => o.visible));
+    }
+    function buildController(i) {
+      const c = renderer.xr.getController(i);
+      const ray = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-RAY_LEN)]),
+        new THREE.LineBasicMaterial({ color: ORYX.accent })
+      );
+      c.add(ray);
+      const reticle = new THREE.Mesh(new THREE.RingGeometry(0.012, 0.022, 24),
+        new THREE.MeshBasicMaterial({ color: ORYX.accent, side: THREE.DoubleSide, transparent: true }));
+      reticle.visible = false; c.add(reticle);
+      c.addEventListener('selectstart', () => { const h = rayFromController(c); if (h.length) hit(h[0].object); });
+      scene.add(c); controllers.push({ c, ray, reticle }); return c;
+    }
+    buildController(0); buildController(1);
+    function updateCursors() {
+      let hovered = null, hoveredDist = Infinity;
+      for (const cc of controllers) {
+        const hits = rayFromController(cc.c);
+        if (hits.length) {
+          const d = hits[0].distance;
+          cc.ray.scale.z = d / RAY_LEN; cc.reticle.visible = true; cc.reticle.position.set(0, 0, -d);
+          if (d < hoveredDist) { hoveredDist = d; hovered = hits[0].object; }
+        } else { cc.ray.scale.z = 1; cc.reticle.visible = false; }
+      }
+      for (const o of interactive) {
+        const base = (o.userData.level !== undefined && o.userData.level === curLevel) ? 1.12 : 1.0;
+        o.scale.setScalar(o === hovered ? base * 1.12 : base);
+      }
+    }
+
+    // Route a thumbstick flick to the right answer for the current phase.
+    function dispatchDir(dir) {
+      if (state.phase === 'RESPID') respondDir(dir);
+      else if (state.phase === 'RESPONSE') { if (dir === 'left') respond(1); else if (dir === 'right') respond(2); }
+    }
+    const btnPrev = {};
+    function pollGamepads() {
+      const session = renderer.xr.getSession();
+      if (!session) return;
+      for (const src of session.inputSources) {
+        const gp = src.gamepad; if (!gp) continue;
+        const hand = src.handedness || 'x';
+        const prev = btnPrev[hand] || { a: false, b: false, dir: null };
+        const a = !!(gp.buttons[4] && gp.buttons[4].pressed);
+        const b = !!(gp.buttons[5] && gp.buttons[5].pressed);
+        if (a && !prev.a) respond(1);
+        if (b && !prev.b) respond(2);
+        // thumbstick: axes 2/3 on Quest controllers (fallback 0/1)
+        const ax = gp.axes.length >= 4 ? gp.axes[2] : (gp.axes[0] || 0);
+        const ay = gp.axes.length >= 4 ? gp.axes[3] : (gp.axes[1] || 0);
+        const TH = 0.6;
+        let dir = null;
+        if (Math.abs(ax) > Math.abs(ay)) { if (ax < -TH) dir = 'left'; else if (ax > TH) dir = 'right'; }
+        else { if (ay < -TH) dir = 'up'; else if (ay > TH) dir = 'down'; }
+        if (dir && dir !== prev.dir) dispatchDir(dir); // fire once per flick
+        btnPrev[hand] = { a, b, dir };
+      }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Loop
+    // ---------------------------------------------------------------------------
+    const _cp = new THREE.Vector3(), _cq = new THREE.Quaternion(), _fwd = new THREE.Vector3();
+    const clock = new THREE.Clock();
+    renderer.setAnimationLoop(() => {
+      const dt = clock.getDelta();
+      if (renderer.xr.isPresenting) {
+        updateCursors();
+        const xc = renderer.xr.getCamera();
+        if (xc.cameras && xc.cameras.length >= 2) { xc.cameras[0].layers.enable(1); xc.cameras[1].layers.enable(2); }
+      }
+
+      if (flashT > 0) {
+        flashT -= dt;
+        const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+        cam.getWorldPosition(_cp); cam.getWorldQuaternion(_cq);
+        _fwd.set(0, 0, -1).applyQuaternion(_cq);
+        flash.position.copy(_cp).addScaledVector(_fwd, 0.6);
+        flash.quaternion.copy(_cq);
+        flash.material.opacity = Math.max(0, flashT / FLASH_DUR) * 0.18;
+        if (flashT <= 0) { flash.visible = false; flash.material.opacity = 0; }
+      }
+
+      // transition fade (pauses the trial machine while running)
+      if (fadePhase !== 'idle') {
+        fadeT += dt;
+        const k = Math.min(1, fadeT / FADE_DUR);
+        const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+        cam.getWorldPosition(_cp); cam.getWorldQuaternion(_cq);
+        _fwd.set(0, 0, -1).applyQuaternion(_cq);
+        fade.position.copy(_cp).addScaledVector(_fwd, 0.5);
+        fade.quaternion.copy(_cq);
+        if (fadePhase === 'out') {
+          fade.material.opacity = k;
+          if (k >= 1) { if (fadeCb) { fadeCb(); fadeCb = null; } fadePhase = 'in'; fadeT = 0; }
+        } else {
+          fade.material.opacity = 1 - k;
+          if (k >= 1) { fadePhase = 'idle'; fade.visible = false; fade.material.opacity = 0; }
+        }
+      }
+
+      logoPlane.visible = logoPlaying; // authoritative: never linger after the intro
+      if (logoPlaying) {
+        const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+        cam.getWorldPosition(_cp); cam.getWorldQuaternion(_cq);
+        _fwd.set(0, 0, -1).applyQuaternion(_cq);
+        logoPlane.position.copy(_cp).addScaledVector(_fwd, 0.9);
+        logoPlane.quaternion.copy(_cq);
+      }
+
+      // Authoritative every-frame visibility: overlays show ONLY while animating, never in AR.
+      flash.visible = flashT > 0 && !overlaySuppressed();
+      fade.visible = fadePhase !== 'idle' && !overlaySuppressed();
+
+      if (screen === 'TRAINING' && fadePhase === 'idle') {
+        state.phaseT += dt;
+        switch (state.phase) {
+          case 'PRESTART': {
+            const t = state.phaseT, FI = 0.5, HOLD = 3.0, FO = 0.5, PAUSE = 1.0;
+            let op = 0;
+            if (t < FI) op = t / FI;                                  // fade in
+            else if (t < FI + HOLD) op = 1;                           // hold 3s
+            else if (t < FI + HOLD + FO) op = 1 - (t - FI - HOLD) / FO; // fade out
+            readyText.material.opacity = op; focusRing.material.opacity = op;
+            if (t >= FI + HOLD + FO + PAUSE) newTrial();              // then 1s pause → stimulus
+            break;
+          }
+          case 'STIM1': if (state.phaseT >= CONFIG.tStim) setPhase('GAP'); break;
+          case 'GAP':   if (state.phaseT >= CONFIG.tGap)  setPhase('STIM2'); break;
+          case 'STIM2': if (state.phaseT >= CONFIG.tStim) setPhase('RESPONSE'); break;
+          case 'STIMID': if (state.phaseT >= CONFIG.tStim) setPhase('RESPID'); break;
+          case 'RESPID': pollGamepads(); break; // direction answer via stick/buttons
+          case 'RESPONSE': pollGamepads(); break;
+          case 'ITI':   if (state.phaseT >= CONFIG.iti) { if (state.trial >= (LEVELS[curLevel - 1].trials || CONFIG.trialsPerLevel)) endLevel(); else newTrial(); } break;
+        }
+      }
+      renderer.render(scene, camera);
+    });
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    setScreen('SPLASH'); // nothing shown until Enter VR → logo → dashboard
+  </script>
+</body>
+</html>
