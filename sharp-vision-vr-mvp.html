@@ -139,16 +139,26 @@
     const corridor = new THREE.Group();
     corridor.visible = false;
     rig.add(corridor);
-    function addGrid(rotX, rotZ, px, py, pz) {
-      const g = new THREE.GridHelper(30, 40, 0x26314d, 0x26314d);
-      g.rotation.x = rotX; g.rotation.z = rotZ; g.position.set(px, py, pz);
-      corridor.add(g);
+    // Rectangular grid (uSize × vSize) in the local XY plane → positioned per face,
+    // so each face is bounded to the box and the walls meet floor/ceiling at the edges
+    // (no overlapping/crossing grids).
+    const CORR_COLOR = 0x26314d;
+    function gridRect(uSize, vSize, cell) {
+      const uDiv = Math.max(1, Math.round(uSize / cell)), vDiv = Math.max(1, Math.round(vSize / cell));
+      const pts = [];
+      for (let i = 0; i <= uDiv; i++) { const x = -uSize / 2 + uSize * i / uDiv; pts.push(x, -vSize / 2, 0, x, vSize / 2, 0); }
+      for (let j = 0; j <= vDiv; j++) { const y = -vSize / 2 + vSize * j / vDiv; pts.push(-uSize / 2, y, 0, uSize / 2, y, 0); }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+      return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: CORR_COLOR }));
     }
-    addGrid(0, 0, 0, -1.3, -12);           // floor
-    addGrid(0, 0, 0,  1.3, -12);           // ceiling
-    addGrid(0, Math.PI / 2, -2.4, 0, -12); // left wall
-    addGrid(0, Math.PI / 2,  2.4, 0, -12); // right wall
-    addGrid(Math.PI / 2, 0, 0, 0, -20);    // back wall — grid backdrop behind the circle
+    function addFace(grid, rx, ry, px, py, pz) { grid.rotation.set(rx, ry, 0); grid.position.set(px, py, pz); corridor.add(grid); }
+    const CW = 4.8, CH = 2.6, CD = 28, CZ = -12, CELL = 0.8; // width, height, depth, centre-z, cell
+    addFace(gridRect(CW, CD, CELL), -Math.PI / 2, 0, 0, -CH / 2, CZ);        // floor
+    addFace(gridRect(CW, CD, CELL),  Math.PI / 2, 0, 0,  CH / 2, CZ);        // ceiling
+    addFace(gridRect(CD, CH, CELL),  0, Math.PI / 2, -CW / 2, 0, CZ);        // left wall
+    addFace(gridRect(CD, CH, CELL),  0, Math.PI / 2,  CW / 2, 0, CZ);        // right wall
+    addFace(gridRect(CW, CH, CELL),  0, 0, 0, 0, CZ - CD / 2);               // back wall (closes the far end)
 
     // ---------------------------------------------------------------------------
     // Canvas helpers
@@ -1025,10 +1035,11 @@
     }
     function buildController(i) {
       const c = renderer.xr.getController(i);
-      const ray = new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-RAY_LEN)]),
-        new THREE.LineBasicMaterial({ color: ORYX.accent })
-      );
+      // thin cylinder beam instead of a 1px Line → smooth, antialiased (no jaggies)
+      const rayGeo = new THREE.CylinderGeometry(0.0045, 0.0045, RAY_LEN, 12);
+      rayGeo.rotateX(-Math.PI / 2);          // align the length along -Z
+      rayGeo.translate(0, 0, -RAY_LEN / 2);  // start at the controller, extend forward
+      const ray = new THREE.Mesh(rayGeo, new THREE.MeshBasicMaterial({ color: ORYX.accent }));
       c.add(ray);
       const reticle = new THREE.Mesh(new THREE.RingGeometry(0.012, 0.022, 24),
         new THREE.MeshBasicMaterial({ color: ORYX.accent, side: THREE.DoubleSide, transparent: true }));
@@ -1038,8 +1049,11 @@
     }
     buildController(0); buildController(1);
     function updateCursors() {
+      const showRay = !logoPlaying; // no ray during the Oryx intro
       let hovered = null, hoveredDist = Infinity;
       for (const cc of controllers) {
+        cc.ray.visible = showRay;
+        if (!showRay) { cc.reticle.visible = false; continue; }
         const hits = rayFromController(cc.c);
         if (hits.length) {
           const d = hits[0].distance;
