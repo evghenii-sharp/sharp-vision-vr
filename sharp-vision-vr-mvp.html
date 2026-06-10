@@ -150,29 +150,39 @@
     const corridor = new THREE.Group();
     corridor.visible = false;
     rig.add(corridor);
-    // Rectangular grid (uSize × vSize) in the local XY plane → positioned per face,
-    // so each face is bounded to the box and the walls meet floor/ceiling at the edges
-    // (no overlapping/crossing grids).
+    // Tapered corridor (forced-perspective frustum): wide near, narrowing to a small
+    // far end — a much stronger tunnel/depth cue than a plain box.
     const CORR_COLOR = 0x26314d;
-    function gridRect(uSize, vSize, cell) {
-      const uDiv = Math.max(1, Math.round(uSize / cell)), vDiv = Math.max(1, Math.round(vSize / cell));
-      const pts = [];
-      for (let i = 0; i <= uDiv; i++) { const x = -uSize / 2 + uSize * i / uDiv; pts.push(x, -vSize / 2, 0, x, vSize / 2, 0); }
-      for (let j = 0; j <= vDiv; j++) { const y = -vSize / 2 + vSize * j / vDiv; pts.push(-uSize / 2, y, 0, uSize / 2, y, 0); }
+    {
+      const zN = 2, zF = -26;          // near / far z
+      const HWn = 2.4, HHn = 1.3;      // near half-width / half-height
+      const HWf = 0.85, HHf = 0.48;    // far half-size (tapered ⇒ small back wall)
+      const NZ = 18, NX = 6, NY = 4;   // depth rings / floor-ceiling / wall divisions
+      const hw = t => HWn + (HWf - HWn) * t, hh = t => HHn + (HHf - HHn) * t, zz = t => zN + (zF - zN) * t;
+      const P = [];
+      for (let i = 0; i <= NZ; i++) {  // cross-section ring at each depth
+        const t = i / NZ, w = hw(t), h = hh(t), z = zz(t), c = [[-w, -h], [w, -h], [w, h], [-w, h]];
+        for (let k = 0; k < 4; k++) { const a = c[k], b = c[(k + 1) % 4]; P.push(a[0], a[1], z, b[0], b[1], z); }
+      }
+      for (let j = 0; j <= NX; j++) {  // floor + ceiling longitudinal lines
+        const fx = -1 + 2 * j / NX;
+        for (let i = 0; i < NZ; i++) { const t0 = i / NZ, t1 = (i + 1) / NZ;
+          P.push(fx * hw(t0), -hh(t0), zz(t0), fx * hw(t1), -hh(t1), zz(t1));
+          P.push(fx * hw(t0),  hh(t0), zz(t0), fx * hw(t1),  hh(t1), zz(t1)); }
+      }
+      for (let j = 0; j <= NY; j++) {  // wall longitudinal lines
+        const fy = -1 + 2 * j / NY;
+        for (let i = 0; i < NZ; i++) { const t0 = i / NZ, t1 = (i + 1) / NZ;
+          P.push(-hw(t0), fy * hh(t0), zz(t0), -hw(t1), fy * hh(t1), zz(t1));
+          P.push( hw(t0), fy * hh(t0), zz(t0),  hw(t1), fy * hh(t1), zz(t1)); }
+      }
+      { const w = hw(1), h = hh(1), z = zz(1); // small back-wall grid (closes the far end)
+        for (let j = 1; j < 3; j++) { const x = -w + 2 * w * j / 3; P.push(x, -h, z, x, h, z); }
+        P.push(-w, 0, z, w, 0, z); }
       const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
-      return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: CORR_COLOR }));
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+      corridor.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: CORR_COLOR })));
     }
-    function addFace(grid, rx, ry, px, py, pz) { grid.rotation.set(rx, ry, 0); grid.position.set(px, py, pz); corridor.add(grid); return grid; }
-    const CW = 4.8, CH = 2.6, CD = 28, CZ = -12, CELL = 0.8; // width, height, depth, centre-z, cell
-    addFace(gridRect(CW, CD, CELL), -Math.PI / 2, 0, 0, -CH / 2, CZ);        // floor
-    addFace(gridRect(CW, CD, CELL),  Math.PI / 2, 0, 0,  CH / 2, CZ);        // ceiling
-    const leftWall  = addFace(gridRect(CD, CH, CELL), 0, Math.PI / 2, -CW / 2, 0, CZ); // left wall
-    const rightWall = addFace(gridRect(CD, CH, CELL), 0, Math.PI / 2,  CW / 2, 0, CZ); // right wall
-    addFace(gridRect(CW, CH, CELL),  0, 0, 0, 0, CZ - CD / 2);               // back wall (closes the far end)
-    const WALL_LEAN = Math.atan(0.05); // ~5% inward tilt at the top → stronger corridor feel
-    leftWall.rotateOnWorldAxis(new THREE.Vector3(0, 0, 1), -WALL_LEAN);
-    rightWall.rotateOnWorldAxis(new THREE.Vector3(0, 0, 1),  WALL_LEAN);
 
     // ---------------------------------------------------------------------------
     // Canvas helpers
@@ -341,6 +351,21 @@
     // ---------------------------------------------------------------------------
     const circle = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ transparent: true }));
     rig.add(circle);
+
+    // Single Tumbling-E as crisp GEOMETRY (stays sharp at any distance, unlike a
+    // minified texture which blurs the thin strokes). Bounding box = 1 unit.
+    const eMat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
+    const eGroup = new THREE.Group();
+    {
+      const t = 0.18; // stroke ≈ 1/5.5 of the letter (matches the drawn E)
+      const addBar = (w, h, x, y) => { const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), eMat); m.position.set(x, y, 0); eGroup.add(m); };
+      addBar(t, 1.0, -0.5 + t / 2, 0);        // spine (left)
+      addBar(1.0, t, 0,  0.5 - t / 2);        // top prong
+      addBar(1.0, t, 0,  0);                  // middle prong
+      addBar(1.0, t, 0, -(0.5 - t / 2));      // bottom prong (prongs point +x = "right")
+    }
+    eGroup.visible = false;
+    rig.add(eGroup);
     function placeCircle(z, radius) {
       const cy = LEVELS[curLevel - 1].mode === 'gabor' ? GABOR_Y : STIM_Y;
       circle.position.set(0, cy, z);
@@ -962,7 +987,7 @@
       gearBtn.visible = dash || train;
       calibMeshes.forEach((m) => m.visible = cal);
       if (!train) {
-        circle.visible = fixation.visible = btn1.visible = btn2.visible = false;
+        circle.visible = eGroup.visible = fixation.visible = btn1.visible = btn2.visible = false;
         dirButtons.forEach((b) => b.visible = false);
         animalSprite.visible = false; animalBtns.forEach((b) => b.visible = false);
         introTextMesh.visible = false; introYesBtn.visible = false; dbgField.visible = false;
@@ -1039,21 +1064,29 @@
     }
     function showOptotype() {
       const L = LEVELS[curLevel - 1];
-      circle.material.map = makeOptotypeTexture(state.targetDir, L.mode === 'crowding');
-      circle.material.needsUpdate = true;
-      // dichoptic: show the E to one eye only (layer 1 = left, 2 = right); else both eyes
-      circle.layers.set(L.mode === 'dichoptic' ? state.dichEye : 0);
-      let z = L.z, distK = 1;
-      if (L.mode === 'accommodation') {
-        // alternate near / far each trial; fixed physical size, so it visibly
-        // looms large up close and shrinks far away (natural perspective).
-        z = (state.trial % 2 === 1) ? L.nearZ : L.farZ;
+      if (L.mode === 'crowding') { // 5×5 grid stays a texture (shown up close, fine)
+        eGroup.visible = false;
+        circle.material.map = makeOptotypeTexture(state.targetDir, true);
+        circle.material.needsUpdate = true;
+        circle.layers.set(0);
+        circle.position.set(0, STIM_Y, L.z);
+        const d = 2 * state.optoSize * 2.74 * sizeScale;
+        circle.scale.set(d, d, 1);
+        circle.visible = true;
+        return;
       }
-      circle.position.set(0, STIM_Y, z);
-      const gridK = L.mode === 'crowding' ? 2.74 : 1; // keep the centre E ≈ single-optotype size
-      const d = 2 * state.optoSize * gridK * distK * sizeScale;
-      circle.scale.set(d, d, 1);
-      circle.visible = true;
+      // single E → crisp geometry
+      circle.visible = false;
+      let z = L.z;
+      // accommodation: alternate near / far each trial (fixed size ⇒ natural looming)
+      if (L.mode === 'accommodation') z = (state.trial % 2 === 1) ? L.nearZ : L.farZ;
+      eGroup.position.set(0, STIM_Y, z);
+      eGroup.rotation.z = -E_ROT[state.targetDir]; // prongs point the target way (y-up vs canvas y-down)
+      const size = 0.56 * state.optoSize * sizeScale; // matches the previous on-screen E footprint
+      eGroup.scale.set(size, size, 1);
+      const layer = (L.mode === 'dichoptic') ? state.dichEye : 0; // dichoptic → one eye
+      eGroup.children.forEach((m) => m.layers.set(layer));
+      eGroup.visible = true;
     }
     function showInterval(n) {
       const iv = state.intervals[n - 1];
@@ -1065,7 +1098,7 @@
     function setPhase(p) {
       if (p === 'PRESTART' && LEVELS[curLevel - 1].mode === 'animal') { setPhase('IREADY'); return; } // Safari: guided intro
       state.phase = p; state.phaseT = 0;
-      circle.visible = false; fixation.visible = false; btn1.visible = btn2.visible = false;
+      circle.visible = false; eGroup.visible = false; fixation.visible = false; btn1.visible = btn2.visible = false;
       dirButtons.forEach((b) => b.visible = false);
       animalSprite.visible = false; animalBtns.forEach((b) => b.visible = false);
       introTextMesh.visible = false; introYesBtn.visible = false;
@@ -1092,7 +1125,7 @@
       else if (p === 'RESPONSE') btn1.visible = btn2.visible = true;
       else if (p === 'DOT') showSafari(dotTex, 0.03 * Math.abs(state.animalZ)); // ring: constant on-screen size at any distance
       else if (p === 'ANIMAL') { // photo flashes; size grows with depth so mid/far stay big (still closer = bigger)
-        const w = state.animalSize * Math.pow(Math.abs(state.animalZ) / 7, 0.65);
+        const w = state.animalSize * Math.pow(Math.abs(state.animalZ) / 7, 0.4); // closer = clearly bigger, far = clearly smaller
         showSafari(animalTex[state.animalTarget], w, animalAspect[state.animalTarget]);
       }
       else if (p === 'ANSWER') animalBtns.forEach((b, k) => { // session: cross layout
