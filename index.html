@@ -64,7 +64,11 @@
       baseContrast: 0.25, minContrast: 0.03, maxContrast: 0.6, ctStepDown: 0.03, ctStepUp: 0.05,
       // optotype size staircase (Tumbling E / crowding) — smaller = harder
       baseOpto: 0.10, minOpto: 0.025, maxOpto: 0.18, optoStepDown: 0.012, optoStepUp: 0.02,
+      // Safari: dot lead-in, then the animal flashes; correct → smaller (harder)
+      dotDur: 1.0, baseAnimalDur: 0.7,
+      baseAnimalSize: 0.55, minAnimalSize: 0.13, maxAnimalSize: 0.85, sizeStepDown: 0.04, sizeStepUp: 0.06,
     };
+    const ANIMALS = ['🐪', '🦂', '🐍', '🦎']; // camel, scorpion, snake, lizard
 
     // Renamed levels: 3 blur sizes, then distance VR / AR
     const LEVELS = [
@@ -81,6 +85,7 @@
       { n: 11, name: 'Accommodation', short: 'Accom', mode: 'accommodation', nearZ: -1.0, farZ: -7.0 },
       { n: 12, name: 'Dichoptic',     short: 'Dich',  mode: 'dichoptic', z: -2.2 },
       { n: 13, name: 'L/R Eye',       short: 'L/R',   mode: 'lreye', radius: 0.06, z: -2.2, trials: 20 },
+      { n: 14, name: 'Safari',        short: 'Safari', mode: 'animal' },
     ];
 
     // ---------------------------------------------------------------------------
@@ -122,9 +127,15 @@
     function updateBackground() {
       const L = LEVELS[curLevel - 1];
       const passthrough = renderer.xr.isPresenting && screen === 'TRAINING' && L.ar;
+      const desert = screen === 'TRAINING' && L.mode === 'animal';
+      if (desert) { // 360° equirectangular desert photo — look around
+        skybox.visible = false; skybox.material.map = null;
+        scene.background = desertTex;
+        return;
+      }
       const col = ORYX.bg;
+      skybox.material.map = null; skybox.material.color.set(col); skybox.material.needsUpdate = true;
       skybox.visible = !passthrough;
-      skybox.material.color.set(col);
       scene.background = passthrough ? null : new THREE.Color(col);
     }
 
@@ -386,6 +397,90 @@
     gaborField.visible = false;
     rig.add(gaborField);
 
+    // -------------------------------------------------------------------------
+    // Safari — desert 360° backdrop + animal identification
+    // -------------------------------------------------------------------------
+    const SAFARI_Z = -3.0;
+    function makeDesertTexture() {
+      const W = 2048, H = 1024;
+      const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+      const ctx = cv.getContext('2d');
+      const horizon = H * 0.52;
+      const sky = ctx.createLinearGradient(0, 0, 0, horizon); // blue → pale at the horizon
+      sky.addColorStop(0, '#7fb2e0'); sky.addColorStop(0.7, '#bcd6ec'); sky.addColorStop(1, '#f0e3c4');
+      ctx.fillStyle = sky; ctx.fillRect(0, 0, W, horizon);
+      const sun = ctx.createRadialGradient(W * 0.7, horizon * 0.55, 10, W * 0.7, horizon * 0.55, 260);
+      sun.addColorStop(0, 'rgba(255,250,228,0.95)'); sun.addColorStop(1, 'rgba(255,250,228,0)');
+      ctx.fillStyle = sun; ctx.fillRect(0, 0, W, horizon);
+      const sand = ctx.createLinearGradient(0, horizon, 0, H);
+      sand.addColorStop(0, '#e7cd95'); sand.addColorStop(1, '#caa760');
+      ctx.fillStyle = sand; ctx.fillRect(0, horizon, W, H - horizon);
+      for (let k = 0; k < 4; k++) { // dune ridges
+        const y = horizon + 26 + k * 58;
+        ctx.fillStyle = k % 2 ? 'rgba(178,148,92,0.45)' : 'rgba(214,189,134,0.45)';
+        ctx.beginPath(); ctx.moveTo(0, y);
+        for (let x = 0; x <= W; x += 48) ctx.lineTo(x, y + Math.sin((x / W) * Math.PI * (3 + k) + k) * (18 + k * 6));
+        ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
+      }
+      const t = newTex(cv); t.colorSpace = THREE.SRGBColorSpace; t.needsUpdate = true;
+      return t;
+    }
+    // Real 360° equirectangular photo for the backdrop; procedural desert as a
+    // fallback shown only until the photo finishes loading.
+    const desertProc = makeDesertTexture();
+    desertProc.mapping = THREE.EquirectangularReflectionMapping;
+    let desertTex = desertProc;
+    new THREE.TextureLoader().load('equirectangular-sample.jpg', (t) => {
+      t.mapping = THREE.EquirectangularReflectionMapping;
+      t.colorSpace = THREE.SRGBColorSpace;
+      t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      t.needsUpdate = true;
+      desertTex = t;
+      updateBackground();
+    });
+    function makeEmojiTexture(emoji) {
+      const S = 256;
+      const cv = document.createElement('canvas'); cv.width = cv.height = S;
+      const ctx = cv.getContext('2d');
+      ctx.clearRect(0, 0, S, S);
+      ctx.font = '200px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(emoji, S / 2, S / 2 + 8);
+      const t = newTex(cv); t.colorSpace = THREE.SRGBColorSpace; t.needsUpdate = true;
+      return t;
+    }
+    const animalTex = ANIMALS.map(makeEmojiTexture);
+    function makeDotTexture() {
+      const S = 128;
+      const cv = document.createElement('canvas'); cv.width = cv.height = S;
+      const ctx = cv.getContext('2d');
+      ctx.clearRect(0, 0, S, S);
+      const g = ctx.createRadialGradient(S / 2, S / 2, 2, S / 2, S / 2, S * 0.34);
+      g.addColorStop(0, '#ffffff'); g.addColorStop(0.6, '#ffe79c'); g.addColorStop(1, 'rgba(255,231,156,0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(S / 2, S / 2, S * 0.34, 0, Math.PI * 2); ctx.fill();
+      const t = newTex(cv); t.colorSpace = THREE.SRGBColorSpace; t.needsUpdate = true;
+      return t;
+    }
+    const dotTex = makeDotTexture();
+    const animalSprite = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ transparent: true }));
+    animalSprite.visible = false;
+    rig.add(animalSprite);
+    function showSafari(tex, sizeM) {
+      animalSprite.material.map = tex; animalSprite.material.needsUpdate = true;
+      animalSprite.position.set(state.animalX, STIM_Y, state.animalZ); // varies near/far + left/right
+      animalSprite.scale.set(sizeM, sizeM, 1);
+      animalSprite.visible = true;
+    }
+    // Answer buttons laid out like keyboard arrows (↑ ↓ ← →) so the thumbstick can pick them
+    const ANIMAL_DIRS = ['up', 'down', 'left', 'right'];
+    const ANIMAL_POS = { up: [0, -0.42], down: [0, -0.74], left: [-0.19, -0.58], right: [0.19, -0.58] };
+    const animalBtns = ANIMALS.map((e, i) => {
+      const m = makeButton(e, 0.16, 0.16, 'secondary', () => respondAnimal(i));
+      const [x, y] = ANIMAL_POS[ANIMAL_DIRS[i]];
+      m.position.set(x, y, -2.0);
+      m.visible = false;
+      return m;
+    });
+
     const flash = new THREE.Mesh(
       new THREE.PlaneGeometry(1.6, 1.6),
       new THREE.MeshBasicMaterial({ color: ORYX.good, transparent: true, opacity: 0, depthTest: false, depthWrite: false })
@@ -599,6 +694,7 @@
       { label: 'Gabor', subs: [{ n: 6, label: 'Coarse' }, { n: 7, label: 'Medium' }, { n: 8, label: 'Fine' }] },
       { label: 'Distance E test', n: 11 },
       { label: 'Left/Right eye', n: 13 },
+      { label: 'Safari', n: 14 },
     ];
     // Session = one level per top-bar category; sub-categories use Medium by default
     const catLevel = (cat) => cat.subs ? (cat.subs[1] || cat.subs[0]).n : cat.n;
@@ -680,6 +776,7 @@
       else if (L.mode === 'optotype' || L.mode === 'accommodation' || L.mode === 'dichoptic') prompt = 'Which way does the E point?';
       else if (L.mode === 'crowding') prompt = 'Centre E — which way?';
       else if (L.mode === 'lreye') prompt = 'Which was SHARPER?';
+      else if (L.mode === 'animal') prompt = 'Which animal was it?';
       else { const verb = L.mode === 'acuity' ? (CONFIG.pickSharper ? 'SHARPER' : 'more BLURRED') : 'NEARER'; prompt = `Which was ${verb}?`; }
       c.font = '32px system-ui, sans-serif';
       c.fillStyle = ORYX.text;
@@ -764,6 +861,7 @@
     const state = {
       trial: 0, blurPx: CONFIG.baseBlurPx, dz: CONFIG.baseDz, contrast: CONFIG.baseContrast,
       optoSize: CONFIG.baseOpto, targetDir: 'up', dichEye: 1,
+      animalTarget: 0, animalDur: CONFIG.baseAnimalDur, animalSize: CONFIG.baseAnimalSize, animalX: 0, animalZ: SAFARI_Z,
       phase: 'IDLE', phaseT: 0,
       intervals: [null, null], target: 1,
       lastResult: '', history: [],
@@ -784,6 +882,7 @@
       if (!train) {
         circle.visible = fixation.visible = btn1.visible = btn2.visible = false;
         dirButtons.forEach((b) => b.visible = false);
+        animalSprite.visible = false; animalBtns.forEach((b) => b.visible = false);
         readyText.visible = false; focusRing.visible = false;
         corridor.visible = false; frame.visible = false; gaborField.visible = false;
         state.phase = 'IDLE';
@@ -820,7 +919,7 @@
       gaborField.visible = mode === 'gabor'; // grey display disc stays for the whole gabor level
       state.trial = 0; state.lastResult = '';
       state.blurPx = CONFIG.baseBlurPx; state.dz = CONFIG.baseDz; state.contrast = CONFIG.baseContrast;
-      state.optoSize = CONFIG.baseOpto;
+      state.optoSize = CONFIG.baseOpto; state.animalDur = CONFIG.baseAnimalDur; state.animalSize = CONFIG.baseAnimalSize;
       updateBackground();
     }
 
@@ -878,9 +977,11 @@
       placeCircle(iv.z, iv.radius); circle.visible = true;
     }
     function setPhase(p) {
+      if (p === 'PRESTART' && LEVELS[curLevel - 1].mode === 'animal') { newTrial(); return; } // Safari: no "Focus here"
       state.phase = p; state.phaseT = 0;
       circle.visible = false; fixation.visible = false; btn1.visible = btn2.visible = false;
       dirButtons.forEach((b) => b.visible = false);
+      animalSprite.visible = false; animalBtns.forEach((b) => b.visible = false);
       readyText.visible = focusRing.visible = (p === 'PRESTART'); // "Focus here" + empty ring lead-in
       if (p === 'PRESTART') {
         const L = LEVELS[curLevel - 1];
@@ -901,11 +1002,20 @@
       else if (p === 'STIMID') { showOptotype(); sndTick(); }            // E shown briefly
       else if (p === 'RESPID') { dirButtons.forEach((b) => b.visible = true); } // then it's gone, answer
       else if (p === 'RESPONSE') btn1.visible = btn2.visible = true;
+      else if (p === 'DOT') showSafari(dotTex, 0.08);                  // Safari: dot lead-in
+      else if (p === 'ANIMAL') showSafari(animalTex[state.animalTarget], state.animalSize); // then the animal flashes
+      else if (p === 'ANSWER') animalBtns.forEach((b) => b.visible = true);     // pick the animal
       drawProgress();
     }
     function newTrial() {
       state.trial++; state.lastResult = '';
       const mode = LEVELS[curLevel - 1].mode;
+      if (mode === 'animal') {
+        state.animalTarget = Math.floor(Math.random() * ANIMALS.length);
+        state.animalX = (Math.random() * 2 - 1) * 0.6;   // a bit left / right
+        state.animalZ = -2.0 - Math.random() * 2.8;       // nearer ↔ farther
+        setPhase('DOT'); return;
+      }
       if (mode === 'lreye') state.dichEye = state.trial <= 10 ? 1 : 2; // first 10 left, next 10 right
       if (mode === 'optotype' || mode === 'crowding' || mode === 'accommodation' || mode === 'dichoptic') {
         state.targetDir = ['up', 'down', 'left', 'right'][Math.floor(Math.random() * 4)];
@@ -922,6 +1032,17 @@
                                : Math.min(CONFIG.maxOpto, state.optoSize + CONFIG.optoStepUp);
       state.lastResult = correct ? 'CORRECT' : 'WRONG';
       state.history.push({ level: curLevel, trial: state.trial, target: state.targetDir, choice: dir, metric: +state.optoSize.toFixed(3), correct });
+      triggerFlash(correct);
+      (correct ? sndCorrect : sndWrong)();
+      setPhase('ITI');
+    }
+    function respondAnimal(i) {
+      if (state.phase !== 'ANSWER') return;
+      const correct = i === state.animalTarget;
+      state.animalSize = correct ? Math.max(CONFIG.minAnimalSize, state.animalSize - CONFIG.sizeStepDown)
+                                 : Math.min(CONFIG.maxAnimalSize, state.animalSize + CONFIG.sizeStepUp);
+      state.lastResult = correct ? 'CORRECT' : 'WRONG';
+      state.history.push({ level: curLevel, trial: state.trial, target: ANIMALS[state.animalTarget], choice: ANIMALS[i], metric: +state.animalSize.toFixed(2), correct });
       triggerFlash(correct);
       (correct ? sndCorrect : sndWrong)();
       setPhase('ITI');
@@ -1009,10 +1130,10 @@
       if (lvl >= 1 && lvl <= LEVELS.length) selectLevel(lvl);
       if (e.key === ' ' && screen === 'DASHBOARD') startTraining();
       if (e.key === 'h' || e.key === 'H') transition(() => setScreen('DASHBOARD'));
-      if (e.key === 'ArrowUp') respondDir('up');
-      else if (e.key === 'ArrowDown') respondDir('down');
-      else if (e.key === 'ArrowLeft') respondDir('left');
-      else if (e.key === 'ArrowRight') respondDir('right');
+      if (e.key === 'ArrowUp') dispatchDir('up');
+      else if (e.key === 'ArrowDown') dispatchDir('down');
+      else if (e.key === 'ArrowLeft') dispatchDir('left');
+      else if (e.key === 'ArrowRight') dispatchDir('right');
     });
 
     let dragging = false, px = 0, py = 0, yaw = 0, pitch = 0;
@@ -1071,6 +1192,7 @@
     function dispatchDir(dir) {
       if (state.phase === 'RESPID') respondDir(dir);
       else if (state.phase === 'RESPONSE') { if (dir === 'left') respond(1); else if (dir === 'right') respond(2); }
+      else if (state.phase === 'ANSWER') { const i = ANIMAL_DIRS.indexOf(dir); if (i >= 0) respondAnimal(i); }
     }
     const btnPrev = {};
     function pollGamepads() {
@@ -1168,6 +1290,9 @@
           case 'GAP':   if (state.phaseT >= CONFIG.tGap)  setPhase('STIM2'); break;
           case 'STIM2': if (state.phaseT >= CONFIG.tStim) setPhase('RESPONSE'); break;
           case 'STIMID': if (state.phaseT >= CONFIG.tStim) setPhase('RESPID'); break;
+          case 'DOT':    if (state.phaseT >= CONFIG.dotDur)     setPhase('ANIMAL'); break; // Safari
+          case 'ANIMAL': if (state.phaseT >= state.animalDur)   setPhase('ANSWER'); break;
+          case 'ANSWER': pollGamepads(); break; // pick via thumbstick flick or controller
           case 'RESPID': pollGamepads(); break; // direction answer via stick/buttons
           case 'RESPONSE': pollGamepads(); break;
           case 'ITI':   if (state.phaseT >= CONFIG.iti) { if (state.trial >= (LEVELS[curLevel - 1].trials || CONFIG.trialsPerLevel)) endLevel(); else newTrial(); } break;
