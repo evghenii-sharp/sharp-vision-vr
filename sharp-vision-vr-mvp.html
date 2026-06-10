@@ -1077,12 +1077,16 @@
       }
       // single E → crisp geometry
       circle.visible = false;
-      let z = L.z;
-      // accommodation: alternate near / far each trial (fixed size ⇒ natural looming)
-      if (L.mode === 'accommodation') z = (state.trial % 2 === 1) ? L.nearZ : L.farZ;
+      let z = L.z, distK = 1;
+      // accommodation: alternate near / far each trial; scale world-size with depth so the
+      // E keeps the SAME on-screen (angular) size at any focal distance → readable far.
+      if (L.mode === 'accommodation') {
+        z = (state.trial % 2 === 1) ? L.nearZ : L.farZ;
+        distK = Math.abs(z) / Math.abs(L.nearZ);
+      }
       eGroup.position.set(0, STIM_Y, z);
       eGroup.rotation.z = -E_ROT[state.targetDir]; // prongs point the target way (y-up vs canvas y-down)
-      const size = 0.56 * state.optoSize * sizeScale; // matches the previous on-screen E footprint
+      const size = 0.56 * state.optoSize * sizeScale * distK; // matches the previous on-screen footprint
       eGroup.scale.set(size, size, 1);
       const layer = (L.mode === 'dichoptic') ? state.dichEye : 0; // dichoptic → one eye
       eGroup.children.forEach((m) => m.layers.set(layer));
@@ -1291,21 +1295,21 @@
     }
     function buildController(i) {
       const c = renderer.xr.getController(i);
-      // thin cylinder beam instead of a 1px Line → smooth, antialiased (no jaggies)
-      const rayGeo = new THREE.CylinderGeometry(0.0045, 0.0045, RAY_LEN, 12);
+      // thin white semi-transparent beam, styled like the Meta system pointer
+      const rayGeo = new THREE.CylinderGeometry(0.0028, 0.0028, RAY_LEN, 12);
       rayGeo.rotateX(-Math.PI / 2);          // align the length along -Z
       rayGeo.translate(0, 0, -RAY_LEN / 2);  // start at the controller, extend forward
-      const ray = new THREE.Mesh(rayGeo, new THREE.MeshBasicMaterial({ color: ORYX.accent }));
+      const ray = new THREE.Mesh(rayGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55 }));
       c.add(ray);
-      const reticle = new THREE.Mesh(new THREE.RingGeometry(0.012, 0.022, 24),
-        new THREE.MeshBasicMaterial({ color: ORYX.accent, side: THREE.DoubleSide, transparent: true }));
+      const reticle = new THREE.Mesh(new THREE.CircleGeometry(0.012, 28), // white dot at the hit point
+        new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, transparent: true, opacity: 0.9 }));
       reticle.visible = false; c.add(reticle);
       c.addEventListener('selectstart', () => { const h = rayFromController(c); if (h.length) hit(h[0].object); });
       scene.add(c); controllers.push({ c, ray, reticle }); return c;
     }
     buildController(0); buildController(1);
     function updateCursors() {
-      const showRay = !logoPlaying; // no ray during the Oryx intro
+      const showRay = !logoPlaying && screen !== 'SPLASH'; // no ray during the black screen / Oryx intro
       let hovered = null, hoveredDist = Infinity;
       for (const cc of controllers) {
         cc.ray.visible = showRay;
