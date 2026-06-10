@@ -530,7 +530,7 @@
     // Field model: animals stand on a ground plane (GY) over the whole field. The
     // lateral spread widens with depth so they fill the field at any distance.
     // Constant world size + perspective ⇒ closer = bigger, farther (toward the horizon) = smaller.
-    const FIELD = { zNear: -5.2, zFar: -50.0, GY: -1.3, xSpread: 0.544 };
+    const FIELD = { zNear: -5.2, zFar: -50.0, GY: -1.3, xSpread: 0.435 };
     function fieldPos(fx, fz) { // fx ∈ [-1,1], fz ∈ [0,1] (0 = near, 1 = far)
       const z = FIELD.zNear + (FIELD.zFar - FIELD.zNear) * fz;
       return { x: fx * FIELD.xSpread * Math.abs(z), z };
@@ -572,15 +572,13 @@
     introTextMesh.visible = false;
     rig.add(introTextMesh);
     function setIntroText(str, fontPx = 60) {
-      const c = introCv.getContext('2d'), W = 1024, H = 256;
+      const c = introCv.getContext('2d'), W = 1024, H = 256, maxW = W - 60;
       c.clearRect(0, 0, W, H);
       c.fillStyle = ORYX.text; c.textAlign = 'center'; c.textBaseline = 'middle';
-      c.font = '600 ' + fontPx + 'px system-ui, sans-serif';
-      const words = str.split(' '), lines = []; let line = ''; const maxW = W - 90;
-      for (const w of words) { const t = line ? line + ' ' + w : w; if (c.measureText(t).width > maxW && line) { lines.push(line); line = w; } else line = t; }
-      if (line) lines.push(line);
-      const lh = fontPx + 12, y0 = H / 2 - (lines.length - 1) * lh / 2;
-      lines.forEach((ln, i) => c.fillText(ln, W / 2, y0 + i * lh));
+      let fs = fontPx; // single line — shrink to fit (no wrapping)
+      c.font = '600 ' + fs + 'px system-ui, sans-serif';
+      while (c.measureText(str).width > maxW && fs > 16) { fs -= 2; c.font = '600 ' + fs + 'px system-ui, sans-serif'; }
+      c.fillText(str, W / 2, H / 2);
       introTex.needsUpdate = true; introTextMesh.visible = true;
     }
     const lerpFade = (t, s, d) => Math.max(0, Math.min(1, (t - s) / d)); // 0→1 ramp helper for intro fades
