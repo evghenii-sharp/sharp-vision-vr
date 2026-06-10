@@ -66,7 +66,7 @@
       baseOpto: 0.10, minOpto: 0.025, maxOpto: 0.18, optoStepDown: 0.012, optoStepUp: 0.02,
       // Safari: dot lead-in, then the animal flashes; correct → smaller (harder)
       dotDur: 1.0, baseAnimalDur: 0.7,
-      baseAnimalSize: 1.1, minAnimalSize: 0.2, maxAnimalSize: 2.2, sizeStepDown: 0.18, sizeStepUp: 0.26,
+      animalW: 1.6, baseFz: 0.28, fzStepFar: 0.1, fzStepNear: 0.16, // constant world size; difficulty = depth (far = small)
     };
     const ANIMALS = ['🐍', '🦁', '🦓', '🐦']; // snake, lion, zebra, seagull
 
@@ -459,6 +459,7 @@
     const desertProc = makeDesertTexture();
     desertProc.mapping = THREE.EquirectangularReflectionMapping;
     let desertTex = desertProc;
+    let panoReady = false; // true once the photo has decoded → Safari can reveal it
     // scene.background ignores texture.offset for equirect, so we roll the photo 180°
     // by swapping its left/right halves on a full-resolution canvas (no downscaling).
     (() => {
@@ -474,7 +475,7 @@
         t.colorSpace = THREE.SRGBColorSpace;
         t.anisotropy = renderer.capabilities.getMaxAnisotropy();
         t.needsUpdate = true;
-        desertTex = t; updateBackground();
+        desertTex = t; panoReady = true; updateBackground();
       };
       img.src = 'scene4.jpg';
     })();
@@ -529,7 +530,7 @@
     // Field model: animals stand on a ground plane (GY) over the whole field. The
     // lateral spread widens with depth so they fill the field at any distance.
     // Constant world size + perspective ⇒ closer = bigger, farther (toward the horizon) = smaller.
-    const FIELD = { zNear: -5.2, zFar: -50.0, GY: -1.3, xSpread: 0.68 };
+    const FIELD = { zNear: -5.2, zFar: -50.0, GY: -1.3, xSpread: 0.544 };
     function fieldPos(fx, fz) { // fx ∈ [-1,1], fz ∈ [0,1] (0 = near, 1 = far)
       const z = FIELD.zNear + (FIELD.zFar - FIELD.zNear) * fz;
       return { x: fx * FIELD.xSpread * Math.abs(z), z };
@@ -968,7 +969,7 @@
     const state = {
       trial: 0, blurPx: CONFIG.baseBlurPx, dz: CONFIG.baseDz, contrast: CONFIG.baseContrast,
       optoSize: CONFIG.baseOpto, targetDir: 'up', dichEye: 1,
-      animalTarget: 0, animalDur: CONFIG.baseAnimalDur, animalSize: CONFIG.baseAnimalSize, animalX: 0, animalZ: SAFARI_Z,
+      animalTarget: 0, animalDur: CONFIG.baseAnimalDur, animalFz: CONFIG.baseFz, animalX: 0, animalZ: SAFARI_Z,
       phase: 'IDLE', phaseT: 0,
       intervals: [null, null], target: 1,
       lastResult: '', history: [],
@@ -1030,7 +1031,7 @@
       progPanel.visible = mode !== 'animal'; // Safari: hide the "Safari" title/progress panel
       state.trial = 0; state.lastResult = '';
       state.blurPx = CONFIG.baseBlurPx; state.dz = CONFIG.baseDz; state.contrast = CONFIG.baseContrast;
-      state.optoSize = CONFIG.baseOpto; state.animalDur = CONFIG.baseAnimalDur; state.animalSize = CONFIG.baseAnimalSize;
+      state.optoSize = CONFIG.baseOpto; state.animalDur = CONFIG.baseAnimalDur; state.animalFz = CONFIG.baseFz;
       updateBackground();
     }
 
@@ -1100,7 +1101,7 @@
       placeCircle(iv.z, iv.radius); circle.visible = true;
     }
     function setPhase(p) {
-      if (p === 'PRESTART' && LEVELS[curLevel - 1].mode === 'animal') { setPhase('IREADY'); return; } // Safari: guided intro
+      if (p === 'PRESTART' && LEVELS[curLevel - 1].mode === 'animal') { setPhase('ILOAD'); return; } // Safari: load panorama, then intro
       state.phase = p; state.phaseT = 0;
       circle.visible = false; eGroup.visible = false; fixation.visible = false; btn1.visible = btn2.visible = false;
       dirButtons.forEach((b) => b.visible = false);
@@ -1129,8 +1130,7 @@
       else if (p === 'RESPONSE') btn1.visible = btn2.visible = true;
       else if (p === 'DOT') showSafari(dotTex, 0.03 * Math.abs(state.animalZ)); // ring: constant on-screen size at any distance
       else if (p === 'ANIMAL') { // photo flashes; size grows with depth so mid/far stay big (still closer = bigger)
-        const w = state.animalSize * Math.pow(Math.abs(state.animalZ) / 7, 0.4); // closer = clearly bigger, far = clearly smaller
-        showSafari(animalTex[state.animalTarget], w, animalAspect[state.animalTarget]);
+        showSafari(animalTex[state.animalTarget], CONFIG.animalW, animalAspect[state.animalTarget]); // constant size ⇒ perspective: far = small, near = big
       }
       else if (p === 'ANSWER') animalBtns.forEach((b, k) => { // session: cross layout
         const [x, y] = ANIMAL_POS[ANIMAL_DIRS[k]]; b.position.set(x, y, -2.0); b.visible = true; b.material.opacity = 1;
@@ -1151,7 +1151,10 @@
       const mode = LEVELS[curLevel - 1].mode;
       if (mode === 'animal') {
         state.animalTarget = Math.floor(Math.random() * ANIMALS.length);
-        { const fp = fieldPos(Math.random() * 2 - 1, Math.random()); state.animalX = fp.x; state.animalZ = fp.z; } // anywhere on the field
+        { // depth from the staircase (+ jitter); size follows distance via perspective
+          const fz = Math.max(0.05, Math.min(1, state.animalFz + (Math.random() - 0.5) * 0.16));
+          const fp = fieldPos(Math.random() * 2 - 1, fz); state.animalX = fp.x; state.animalZ = fp.z;
+        }
         setPhase('DOT'); return;
       }
       if (mode === 'lreye') state.dichEye = state.trial <= 10 ? 1 : 2; // first 10 left, next 10 right
@@ -1177,10 +1180,10 @@
     function respondAnimal(i) {
       if (state.phase !== 'ANSWER') return;
       const correct = i === state.animalTarget;
-      state.animalSize = correct ? Math.max(CONFIG.minAnimalSize, state.animalSize - CONFIG.sizeStepDown)
-                                 : Math.min(CONFIG.maxAnimalSize, state.animalSize + CONFIG.sizeStepUp);
+      state.animalFz = correct ? Math.min(1, state.animalFz + CONFIG.fzStepFar)   // correct → farther (smaller)
+                               : Math.max(0.05, state.animalFz - CONFIG.fzStepNear); // wrong → nearer (bigger)
       state.lastResult = correct ? 'CORRECT' : 'WRONG';
-      state.history.push({ level: curLevel, trial: state.trial, target: ANIMALS[state.animalTarget], choice: ANIMALS[i], metric: +state.animalSize.toFixed(2), correct });
+      state.history.push({ level: curLevel, trial: state.trial, target: ANIMALS[state.animalTarget], choice: ANIMALS[i], metric: +state.animalFz.toFixed(2), correct });
       triggerFlash(correct);
       (correct ? sndCorrect : sndWrong)();
       setPhase('ITI');
@@ -1392,7 +1395,11 @@
         fade.quaternion.copy(_cq);
         if (fadePhase === 'out') {
           fade.material.opacity = k;
-          if (k >= 1) { if (fadeCb) { fadeCb(); fadeCb = null; } fadePhase = 'in'; fadeT = 0; }
+          if (k >= 1) { if (fadeCb) { fadeCb(); fadeCb = null; }
+            // Safari: stay black (ILOAD owns the fade) until the panorama is loaded
+            if (state.phase === 'ILOAD') { fadePhase = 'idle'; fade.material.opacity = 1; }
+            else { fadePhase = 'in'; fadeT = 0; }
+          }
         } else {
           fade.material.opacity = 1 - k;
           if (k >= 1) { fadePhase = 'idle'; fade.visible = false; fade.material.opacity = 0; }
@@ -1410,11 +1417,25 @@
 
       // Authoritative every-frame visibility: overlays show ONLY while animating, never in AR.
       flash.visible = flashT > 0 && !overlaySuppressed();
-      fade.visible = fadePhase !== 'idle' && !overlaySuppressed();
+      fade.visible = (fadePhase !== 'idle' || state.phase === 'ILOAD') && !overlaySuppressed();
 
       if (screen === 'TRAINING' && fadePhase === 'idle') {
         state.phaseT += dt;
         switch (state.phase) {
+          case 'ILOAD': { // black hold while the panorama loads (≥2s), then smoothly reveal it
+            const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+            cam.getWorldPosition(_cp); cam.getWorldQuaternion(_cq);
+            _fwd.set(0, 0, -1).applyQuaternion(_cq);
+            fade.position.copy(_cp).addScaledVector(_fwd, 0.5); fade.quaternion.copy(_cq);
+            const ready = (panoReady && state.phaseT >= 2.0) || state.phaseT >= 6.0; // 6s fallback if it never loads
+            if (!ready) { fade.material.opacity = 1; }
+            else {
+              const f = (state.phaseT - 2.0) / 0.7; // fade the black out over 0.7s
+              fade.material.opacity = Math.max(0, 1 - f);
+              if (f >= 1) { fade.visible = false; fade.material.opacity = 0; setPhase('IREADY'); }
+            }
+            break;
+          }
           case 'PRESTART': {
             const t = state.phaseT, FI = 0.5, HOLD = 3.0, FO = 0.5, PAUSE = 1.0;
             let op = 0;
