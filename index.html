@@ -66,7 +66,7 @@
       baseOpto: 0.10, minOpto: 0.025, maxOpto: 0.18, optoStepDown: 0.012, optoStepUp: 0.02,
       // Safari: dot lead-in, then the animal flashes; correct → smaller (harder)
       dotDur: 1.0, baseAnimalDur: 0.7,
-      baseAnimalSize: 1.1, minAnimalSize: 0.26, maxAnimalSize: 1.7, sizeStepDown: 0.08, sizeStepUp: 0.12,
+      baseAnimalSize: 1.1, minAnimalSize: 0.2, maxAnimalSize: 2.2, sizeStepDown: 0.18, sizeStepUp: 0.26,
     };
     const ANIMALS = ['🐍', '🦁', '🦓', '🐦']; // snake, lion, zebra, seagull
 
@@ -163,13 +163,16 @@
       geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
       return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: CORR_COLOR }));
     }
-    function addFace(grid, rx, ry, px, py, pz) { grid.rotation.set(rx, ry, 0); grid.position.set(px, py, pz); corridor.add(grid); }
+    function addFace(grid, rx, ry, px, py, pz) { grid.rotation.set(rx, ry, 0); grid.position.set(px, py, pz); corridor.add(grid); return grid; }
     const CW = 4.8, CH = 2.6, CD = 28, CZ = -12, CELL = 0.8; // width, height, depth, centre-z, cell
     addFace(gridRect(CW, CD, CELL), -Math.PI / 2, 0, 0, -CH / 2, CZ);        // floor
     addFace(gridRect(CW, CD, CELL),  Math.PI / 2, 0, 0,  CH / 2, CZ);        // ceiling
-    addFace(gridRect(CD, CH, CELL),  0, Math.PI / 2, -CW / 2, 0, CZ);        // left wall
-    addFace(gridRect(CD, CH, CELL),  0, Math.PI / 2,  CW / 2, 0, CZ);        // right wall
+    const leftWall  = addFace(gridRect(CD, CH, CELL), 0, Math.PI / 2, -CW / 2, 0, CZ); // left wall
+    const rightWall = addFace(gridRect(CD, CH, CELL), 0, Math.PI / 2,  CW / 2, 0, CZ); // right wall
     addFace(gridRect(CW, CH, CELL),  0, 0, 0, 0, CZ - CD / 2);               // back wall (closes the far end)
+    const WALL_LEAN = Math.atan(0.05); // ~5% inward tilt at the top → stronger corridor feel
+    leftWall.rotateOnWorldAxis(new THREE.Vector3(0, 0, 1), -WALL_LEAN);
+    rightWall.rotateOnWorldAxis(new THREE.Vector3(0, 0, 1),  WALL_LEAN);
 
     // ---------------------------------------------------------------------------
     // Canvas helpers
@@ -501,7 +504,7 @@
     // Field model: animals stand on a ground plane (GY) over the whole field. The
     // lateral spread widens with depth so they fill the field at any distance.
     // Constant world size + perspective ⇒ closer = bigger, farther (toward the horizon) = smaller.
-    const FIELD = { zNear: -5.2, zFar: -50.0, GY: -1.3, xSpread: 0.85 };
+    const FIELD = { zNear: -5.2, zFar: -50.0, GY: -1.3, xSpread: 0.68 };
     function fieldPos(fx, fz) { // fx ∈ [-1,1], fz ∈ [0,1] (0 = near, 1 = far)
       const z = FIELD.zNear + (FIELD.zFar - FIELD.zNear) * fz;
       return { x: fx * FIELD.xSpread * Math.abs(z), z };
