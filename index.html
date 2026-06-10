@@ -1138,7 +1138,7 @@
         introYesBtn.visible = true; introYesBtn.material.opacity = 0.6;
       }
       else if (p === 'ICHOOSE') { // demo: a row under the text (fades in)
-        setIntroText('You need to choose which animal was it'); introTextMesh.material.opacity = 0;
+        setIntroText('You need to choose which animal it was'); introTextMesh.material.opacity = 0;
         animalBtns.forEach((b, k) => b.position.set((k - (animalBtns.length - 1) / 2) * 0.30, -0.02, -2.0));
       }
       else if (p === 'IFOCUS') { setIntroText('Focus on the dot', 92); introTextMesh.material.opacity = 0; }
