@@ -425,32 +425,31 @@
       const t = newTex(cv); t.colorSpace = THREE.SRGBColorSpace; t.needsUpdate = true;
       return t;
     }
-    // Switchable 360° equirectangular photos; procedural desert is the fallback
-    // shown only until a photo finishes loading. Photos load lazily on first use.
-    const PANOS = ['equirectangular-sample.jpg', 'scene2.jpg', 'scene3.jpg', 'scene4.jpg'];
-    const panoCache = {};
-    let panoIdx = 0;
+    // Single 360° equirectangular backdrop (procedural desert is the fallback until
+    // it loads). The photo is rolled 180° horizontally so the default view shows the
+    // far side of the panorama (what would otherwise be behind you).
     const desertProc = makeDesertTexture();
     desertProc.mapping = THREE.EquirectangularReflectionMapping;
     let desertTex = desertProc;
-    const _panoLoader = new THREE.TextureLoader();
-    function loadPano(i) {
-      const idx = ((i % PANOS.length) + PANOS.length) % PANOS.length;
-      panoIdx = idx;
-      setUiYaw();
-      if (panoCache[idx]) { desertTex = panoCache[idx]; updateBackground(); return; }
-      desertTex = desertProc; updateBackground(); // show fallback while it downloads
-      _panoLoader.load(encodeURI(PANOS[idx]), (t) => {
+    // scene.background ignores texture.offset for equirect, so we roll the photo 180°
+    // by swapping its left/right halves on a full-resolution canvas (no downscaling).
+    (() => {
+      const img = new Image();
+      img.onload = () => {
+        const W = img.width, H = img.height, hw = Math.floor(W / 2);
+        const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+        const ctx = cv.getContext('2d');
+        ctx.drawImage(img, 0, 0, hw, H, W - hw, 0, hw, H);  // left half  → right
+        ctx.drawImage(img, hw, 0, W - hw, H, 0, 0, W - hw, H); // right half → left
+        const t = new THREE.CanvasTexture(cv);
         t.mapping = THREE.EquirectangularReflectionMapping;
         t.colorSpace = THREE.SRGBColorSpace;
         t.anisotropy = renderer.capabilities.getMaxAnisotropy();
         t.needsUpdate = true;
-        panoCache[idx] = t;
-        if (panoIdx === idx) { desertTex = t; updateBackground(); } // still the chosen one
-      });
-    }
-    function cyclePano() { loadPano(panoIdx + 1); }
-    // first load is triggered from configureLevel (after `screen` exists) to avoid a TDZ
+        desertTex = t; updateBackground();
+      };
+      img.src = 'scene4.jpg';
+    })();
     function makeEmojiTexture(emoji) {
       const S = 256;
       const cv = document.createElement('canvas'); cv.width = cv.height = S;
@@ -485,7 +484,7 @@
     }
     // Answer buttons laid out like keyboard arrows (↑ ↓ ← →) so the thumbstick can pick them
     const ANIMAL_DIRS = ['up', 'down', 'left', 'right'];
-    const ANIMAL_POS = { up: [0, -0.42], down: [0, -0.74], left: [-0.19, -0.58], right: [0.19, -0.58] };
+    const ANIMAL_POS = { up: [0, -0.74], down: [0, -1.06], left: [-0.19, -0.90], right: [0.19, -0.90] };
     const animalBtns = ANIMALS.map((e, i) => {
       const m = makeButton(e, 0.16, 0.16, 'secondary', () => respondAnimal(i));
       const [x, y] = ANIMAL_POS[ANIMAL_DIRS[i]];
@@ -850,22 +849,11 @@
       cam.getWorldPosition(p); cam.getWorldQuaternion(q);
       const e = new THREE.Euler().setFromQuaternion(q, 'YXZ');
       rig.position.set(p.x, 0, p.z);
-      baseYaw = e.y; rig.rotation.y = baseYaw + uiYaw;
-    }
-    // Some panoramas read better from the opposite side — flip the UI/stimuli 180°
-    // so you turn around to face the other half of that scene.
-    function setUiYaw() {
-      const animal = LEVELS[curLevel - 1].mode === 'animal';
-      uiYaw = (animal && /scene4/.test(PANOS[panoIdx])) ? Math.PI : 0;
-      rig.rotation.y = baseYaw + uiYaw;
+      rig.rotation.y = e.y;
     }
 
     const gearBtn = makeButton('⚙', 0.1, 0.1, 'secondary', () => { drawCalib(); transition(() => setScreen('CALIB')); });
     gearBtn.position.set(-1.45, -0.78, -2.2);
-    // Safari only: cycle the 360° backdrop photo
-    const sceneBtn = makeButton('Scene ↻', 0.34, 0.1, 'secondary', () => cyclePano());
-    sceneBtn.position.set(1.28, -0.78, -2.2);
-    sceneBtn.visible = false;
     const recenterBtn = makeButton('Recenter', 0.36, 0.12, 'primary', () => recenter());
     recenterBtn.position.set(0, -0.16, -2.2);
     const sizeDownBtn = makeButton('size −', 0.22, 0.12, 'secondary', () => { sizeScale = Math.max(0.5, +(sizeScale - 0.1).toFixed(2)); drawCalib(); });
@@ -882,7 +870,6 @@
     let screen = 'DASHBOARD';
     let curLevel = 1;
     let sizeScale = 1; // global stimulus-size multiplier (calibration)
-    let baseYaw = 0, uiYaw = 0; // baseYaw = recenter heading; uiYaw = per-scene 180° flip
     const state = {
       trial: 0, blurPx: CONFIG.baseBlurPx, dz: CONFIG.baseDz, contrast: CONFIG.baseContrast,
       optoSize: CONFIG.baseOpto, targetDir: 'up', dichEye: 1,
@@ -908,7 +895,6 @@
         circle.visible = fixation.visible = btn1.visible = btn2.visible = false;
         dirButtons.forEach((b) => b.visible = false);
         animalSprite.visible = false; animalBtns.forEach((b) => b.visible = false);
-        sceneBtn.visible = false;
         readyText.visible = false; focusRing.visible = false;
         corridor.visible = false; frame.visible = false; gaborField.visible = false;
         state.phase = 'IDLE';
@@ -943,9 +929,6 @@
       frame.position.y = mode === 'gabor' ? GABOR_Y : STIM_Y; // crosses inside the grey disc for gabor
       frame.visible = false; // shown per-phase (only with the stimulus) in setPhase
       gaborField.visible = mode === 'gabor'; // grey display disc stays for the whole gabor level
-      sceneBtn.visible = mode === 'animal'; // scene-switch button only in Safari
-      if (mode === 'animal' && !panoCache[panoIdx]) loadPano(panoIdx); // lazy first load
-      setUiYaw(); // reset/apply per-scene UI flip
       state.trial = 0; state.lastResult = '';
       state.blurPx = CONFIG.baseBlurPx; state.dz = CONFIG.baseDz; state.contrast = CONFIG.baseContrast;
       state.optoSize = CONFIG.baseOpto; state.animalDur = CONFIG.baseAnimalDur; state.animalSize = CONFIG.baseAnimalSize;
@@ -1041,8 +1024,8 @@
       const mode = LEVELS[curLevel - 1].mode;
       if (mode === 'animal') {
         state.animalTarget = Math.floor(Math.random() * ANIMALS.length);
-        state.animalX = (Math.random() * 2 - 1) * 0.6;   // a bit left / right
-        state.animalZ = -2.0 - Math.random() * 2.8;       // nearer ↔ farther
+        state.animalX = (Math.random() * 2 - 1) * 0.9;   // a bit left / right
+        state.animalZ = -3.0 - Math.random() * 5.0;       // farther overall, wide near ↔ far spread (−3 … −8 m)
         setPhase('DOT'); return;
       }
       if (mode === 'lreye') state.dichEye = state.trial <= 10 ? 1 : 2; // first 10 left, next 10 right
@@ -1159,7 +1142,6 @@
       if (lvl >= 1 && lvl <= LEVELS.length) selectLevel(lvl);
       if (e.key === ' ' && screen === 'DASHBOARD') startTraining();
       if (e.key === 'h' || e.key === 'H') transition(() => setScreen('DASHBOARD'));
-      if ((e.key === 'p' || e.key === 'P') && LEVELS[curLevel - 1].mode === 'animal') cyclePano();
       if (e.key === 'ArrowUp') dispatchDir('up');
       else if (e.key === 'ArrowDown') dispatchDir('down');
       else if (e.key === 'ArrowLeft') dispatchDir('left');
